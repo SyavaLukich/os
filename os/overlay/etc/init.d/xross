@@ -1,0 +1,7 @@
+#!/sbin/openrc-run
+# Автозапуск XrossOS после загрузки Alpine (вместо login-строки)
+description="XrossOS XMB session"
+command="/bin/su"
+command_args="- guest -c /usr/bin/xross-session"
+command_background=false
+depend() { need net udev; after networkmanager; }

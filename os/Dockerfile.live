@@ -1,0 +1,27 @@
+# XrossOS Live rootfs (Alpine, ASUS X550EA) — из этого образа собирается ISO.
+# Стадия 1: компиляция оболочки musl/gcc именно под Jaguar (btver2).
+FROM alpine:3.20 AS build
+RUN apk add --no-cache build-base libx11-dev linux-headers
+COPY src/ /src/
+RUN make -C /src && make -C /src voice
+
+# Стадия 2: корневая ФС live-системы
+FROM alpine:3.20
+RUN apk add --no-cache \
+    alpine-base linux-lts linux-firmware-amdgpu eudev openrc \
+    xorg-server xf86-video-amdgpu xf86-input-libinput mesa-dri-gallium mesa-egl \
+    xinit xterm font-dejavu libx11 alsa-utils squashfs-tools \
+    networkmanager linux-firmware-mediatek \
+    && adduser -D -s /bin/sh guest \
+    && addgroup guest video; addgroup guest input; addgroup guest audio; addgroup guest netdev \
+    && rc-update add udev sysinit && rc-update add udev-trigger sysinit \
+    && rc-update add networkmanager default
+
+COPY --from=build /src/xross /usr/bin/xross
+COPY --from=build /src/xross-voiced /usr/bin/xross-voiced
+COPY os/overlay/ /
+RUN chmod +x /usr/bin/xross-session /usr/bin/xross-launch /etc/init.d/xross \
+    && rc-update add xross default \
+    && KVER=$(ls /lib/modules | head -n1) \
+    && mkinitfs -F "base ata cdrom usb squashfs ext2 virtio" -o /boot/initramfs-xross "$KVER" \
+    && echo "xross: kernel $KVER, initramfs готов"

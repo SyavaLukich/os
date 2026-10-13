@@ -1,0 +1,82 @@
+name: Build XrossOS Live ISO
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["arena/33a1f902-os"]
+    paths:
+      - ".github/workflows/build-iso.yml"
+      - "os/Dockerfile.live"
+      - "os/build-live-iso.sh"
+      - "os/live/**"
+      - "src/**"
+
+permissions:
+  contents: write
+
+jobs:
+  iso:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ISO tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq grub-pc-bin grub-efi-amd64-bin xorriso mtools cpio gzip
+
+      - name: Preflight Alpine packages
+        run: |
+          docker run --rm alpine:3.20 sh -euc '
+            apk update -q
+            for p in alpine-base linux-lts linux-firmware-amdgpu eudev openrc \
+                     xorg-server xf86-video-amdgpu xf86-input-libinput mesa-dri-gallium mesa-egl \
+                     xinit xterm font-dejavu libx11 alsa-utils squashfs-tools \
+                     networkmanager linux-firmware-mediatek build-base libx11-dev linux-headers; do
+              if ! apk add --simulate "$p" >/dev/null 2>&1; then
+                echo "::error title=APKFAIL::$p"
+                exit 1
+              fi
+              echo "ok: $p"
+            done'
+
+      - name: Build rootfs Docker image
+        run: sh os/build-live-iso.sh build
+
+      - name: Export kernel and squashfs
+        run: sh os/build-live-iso.sh export
+
+      - name: Repack initramfs with live init
+        run: sh os/build-live-iso.sh initrd
+
+      - name: Assemble ISO with grub-mkrescue
+        run: sh os/build-live-iso.sh iso
+
+      - name: Verify ISO contents
+        run: |
+          xorriso -indev dist/xrossos-0.2-x550ea.iso -find / -type f 2>/dev/null | head -30 || true
+          ls -lh dist/
+
+      - name: Upload ISO artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: xrossos-0.2-x550ea-iso
+          path: |
+            dist/xrossos-0.2-x550ea.iso
+            dist/xrossos-0.2-x550ea.iso.sha256
+          retention-days: 90
+
+      - name: Publish ISO to GitHub Release v0.2-iso
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v0.2-iso
+          name: "XrossOS 0.2 Live ISO (ASUS X550EA)"
+          body: |
+            Готовый загрузочный Live ISO XrossOS 0.2 «Swirl» под ASUS X550EA.
+            Запись: `dd if=xrossos-0.2-x550ea.iso of=/dev/sdX bs=4M status=progress` или Rufus/balenaEtcher.
+            Проверка: `sha256sum -c xrossos-0.2-x550ea.iso.sha256`
+          files: |
+            dist/xrossos-0.2-x550ea.iso
+            dist/xrossos-0.2-x550ea.iso.sha256
+          fail_on_unmatched_files: true
