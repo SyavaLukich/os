@@ -1,0 +1,45 @@
+#!/bin/sh
+# XrossOS Live: init для initramfs.
+# Находит ISO-носитель, монтирует rootfs.squashfs + overlay (записываемый tmpfs)
+# и делает switch_root в полноценную Alpine-систему с OpenRC.
+PATH=/bin:/sbin:/usr/bin:/usr/sbin
+mount -t proc proc /proc 2>/dev/null
+mount -t sysfs sysfs /sys 2>/dev/null
+mount -t devtmpfs devtmpfs /dev 2>/dev/null
+
+for m in sr_mod cdrom iso9660 squashfs loop overlay sd_mod ahci libata \
+         usb_storage uas xhci_pci ehci_pci ohci_pci virtio_pci virtio_blk ata_piix; do
+    modprobe "$m" 2>/dev/null
+done
+[ -x /sbin/mdev ] && mdev -s 2>/dev/null
+sleep 1
+
+mkdir -p /media/iso /mnt/squash /mnt/rw /newroot
+found=""
+for i in 1 2 3 4 5; do
+    for dev in /dev/sr0 /dev/sr1 /dev/cdrom /dev/sd[a-z] /dev/vd[a-z]; do
+        [ -b "$dev" ] || continue
+        if mount -t iso9660 -o ro "$dev" /media/iso 2>/dev/null; then
+            if [ -f /media/iso/rootfs.squashfs ]; then found=1; break 2; fi
+            umount /media/iso
+        fi
+    done
+    sleep 1; [ -x /sbin/mdev ] && mdev -s 2>/dev/null
+done
+
+if [ -z "$found" ]; then
+    echo "XrossOS: rootfs.squashfs не найден на ISO-носителе, аварийная консоль" >&2
+    exec sh
+fi
+
+mount -t squashfs -o loop,ro /media/iso/rootfs.squashfs /mnt/squash || exec sh
+mount -t tmpfs -o size=70% tmpfs /mnt/rw
+mkdir -p /mnt/rw/upper /mnt/rw/work
+mount -t overlay overlay -o lowerdir=/mnt/squash,upperdir=/mnt/rw/upper,workdir=/mnt/rw/work /newroot || exec sh
+
+for d in dev proc sys; do mount --move "/$d" "/newroot/$d" 2>/dev/null || true; done
+mkdir -p /newroot/media/iso
+mount --move /media/iso /newroot/media/iso 2>/dev/null || true
+
+echo "XrossOS Live: запуск системы…"
+exec switch_root /newroot /sbin/init
