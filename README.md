@@ -8,7 +8,20 @@
 
 ![base](https://img.shields.io/badge/base-Alpine%20Linux-blue) ![shell](https://img.shields.io/badge/shell-C%20%2F%20Xlib%20~60_KB-green) ![target](https://img.shields.io/badge/target-ASUS%20X550EA-orange)
 
-## 📦 Готовая сборка (без компиляции)
+## 💿 Готовый ISO (скачать и записать на флешку)
+
+**[⬇ xrossos-0.2-x550ea.iso (227 МБ)](https://github.com/SyavaLukich/os/releases/download/v0.2-iso/xrossos-0.2-x550ea.iso)** ·
+[страница релиза](https://github.com/SyavaLukich/os/releases/tag/v0.2-iso) ·
+[инструкция и sha256](release/ISO.md)
+
+```bash
+dd if=xrossos-0.2-x550ea.iso of=/dev/sdX bs=4M status=progress
+```
+Live-образ (BIOS+UEFI) собирается GitHub Actions из исходников репозитория:
+`.github/workflows/build-iso.yml`. В git ISO не коммитится — GitHub ограничивает
+файлы в git 100 МБ, образ весит ~216 МиБ, поэтому он лежит в Releases.
+
+## 📦 Готовая сборка оболочки (без компиляции)
 
 Собранная сборка под X550EA уже лежит в репозитории: **`release/`**
 
