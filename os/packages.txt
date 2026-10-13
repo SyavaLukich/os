@@ -28,6 +28,6 @@ alsa-utils
 espeak-ng
 python3
 # ── Сеть / питание X550EA ──
-NetworkManager
+networkmanager
 tlp
 zram-init

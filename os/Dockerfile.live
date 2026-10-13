@@ -11,11 +11,11 @@ RUN apk add --no-cache \
     alpine-base linux-lts linux-firmware-amdgpu eudev openrc \
     xorg-server xf86-video-amdgpu xf86-input-libinput mesa-dri-gallium mesa-egl \
     xinit xterm font-dejavu libx11 alsa-utils squashfs-tools \
-    NetworkManager linux-firmware-mediatek \
+    networkmanager linux-firmware-mediatek \
     && adduser -D -s /bin/sh guest \
     && addgroup guest video; addgroup guest input; addgroup guest audio; addgroup guest netdev \
     && rc-update add udev sysinit && rc-update add udev-trigger sysinit \
-    && rc-update add NetworkManager default
+    && rc-update add networkmanager default
 
 COPY --from=build /src/xross /usr/bin/xross
 COPY --from=build /src/xross-voiced /usr/bin/xross-voiced

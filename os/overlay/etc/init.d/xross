@@ -4,4 +4,4 @@ description="XrossOS XMB session"
 command="/bin/su"
 command_args="- guest -c /usr/bin/xross-session"
 command_background=false
-depend() { need net udev; after NetworkManager; }
+depend() { need net udev; after networkmanager; }

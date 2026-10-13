@@ -33,7 +33,7 @@ jobs:
             for p in alpine-base linux-lts linux-firmware-amdgpu eudev openrc \
                      xorg-server xf86-video-amdgpu xf86-input-libinput mesa-dri-gallium mesa-egl \
                      xinit xterm font-dejavu libx11 alsa-utils squashfs-tools \
-                     NetworkManager linux-firmware-mediatek build-base libx11-dev linux-headers; do
+                     networkmanager linux-firmware-mediatek build-base libx11-dev linux-headers; do
               if ! apk add --simulate "$p" >/dev/null 2>&1; then
                 echo "::error title=APKFAIL::$p"
                 exit 1
