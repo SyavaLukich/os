@@ -8,7 +8,19 @@
 
 ![base](https://img.shields.io/badge/base-Alpine%20Linux-blue) ![shell](https://img.shields.io/badge/shell-C%20%2F%20Xlib%20~60_KB-green) ![target](https://img.shields.io/badge/target-ASUS%20X550EA-orange)
 
-## 🚀 Сборка и запуск
+## 📦 Готовая сборка (без компиляции)
+
+Собранная сборка под X550EA уже лежит в репозитории: **`release/`**
+
+```bash
+tar -xzf release/xrossos-0.2-x550ea.tar.gz   # или сразу каталог release/xrossos-0.2-x550ea/
+cd xrossos-0.2-x550ea && ./run.sh --version  # xross 0.2 (Swirl)
+sudo ./install.sh                            # установка в /opt/xrossos
+```
+Бинари (`-march=btver2`) идут с бандлом всех библиотек в `lib/`, поэтому
+работают и на Alpine, и на Debian — нужен только X11/XLibre. Суммы: `SHA256SUMS`.
+
+## 🚀 Сборка из исходников
 
 ```bash
 make -C src                 # нужен только libX11-dev; по умолчанию -march=btver2 (Jaguar)
