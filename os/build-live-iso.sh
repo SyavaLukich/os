@@ -22,10 +22,13 @@ do_export() {
 do_initrd() {
   echo "==> Подмена /init в initramfs на Live-init XrossOS"
   mkdir -p iso-stage/boot/grub initrd-work
+  ls -lh dist/initramfs.orig.gz || { echo "::error title=INITRD::no orig initramfs"; exit 1; }
+  echo "::notice title=initramfs type::$(file -b dist/initramfs.orig.gz 2>/dev/null || echo unknown)"
   cd initrd-work
-  zcat ../dist/initramfs.orig.gz | cpio -idm --quiet
-  cp ../os/live/init init && chmod +x init
-  find . | cpio -o -H newc --quiet | gzip -9 > ../iso-stage/boot/initramfs.img
+  zcat ../dist/initramfs.orig.gz | cpio -idm --quiet || { echo "::error title=INITRD::zcat-cpio extract failed"; exit 1; }
+  echo "::notice title=initramfs extracted::$(find . -type f | wc -l) files, init=$(ls -l init 2>/dev/null | wc -l)"
+  cp ../os/live/init init && chmod +x init || { echo "::error title=INITRD::cp live init failed"; exit 1; }
+  find . | cpio -o -H newc --quiet | gzip -9 > ../iso-stage/boot/initramfs.img || { echo "::error title=INITRD::repack failed"; exit 1; }
   cd ..
 }
 do_iso() {
