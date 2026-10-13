@@ -15,8 +15,10 @@ do_export() {
   docker run --rm -v "$PWD/dist:/out" xrossos-live sh -euxc '
     cp /boot/vmlinuz-lts /out/vmlinuz
     cp /boot/initramfs-xross /out/initramfs.orig.gz
+    chmod 0644 /out/vmlinuz /out/initramfs.orig.gz
     mksquashfs / /out/rootfs.squashfs -comp xz -b 1M -wildcards \
       -e proc sys dev run tmp out boot "rootfs.squashfs" etc/resolv.conf
+    chmod 0644 /out/rootfs.squashfs
   '
 }
 do_initrd() {
