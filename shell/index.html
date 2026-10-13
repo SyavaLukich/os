@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>XrossOS — главный экран</title>
+<link rel="manifest" href="manifest.json">
+<link rel="stylesheet" href="css/xmb.css">
+</head>
+<body>
+<canvas id="wave"></canvas>
+
+<header id="topbar">
+  <div>✦ XrossOS <span style="opacity:.6;font-size:12px">0.1 «Wave»</span></div>
+  <div class="right">
+    <span id="mic-indicator" title="Голосовое управление (клавиша V)">🎤</span>
+    <span title="Сеть">📶</span><span title="Батарея">🔋 98%</span>
+    <span id="clock">--:--</span>
+  </div>
+</header>
+
+<main id="xmb">
+  <nav id="cats"></nav>
+  <section id="items"></section>
+</main>
+
+<div id="hints">← → ↑ ↓ / геймпад / свайп — навигация &nbsp;·&nbsp; <b>Enter</b> — выбрать &nbsp;·&nbsp; <b>Esc</b> — назад &nbsp;·&nbsp; <b>V</b> или 🎤 — голос: «открой музыку»</div>
+<div id="toast"></div>
+<div id="voicebar"><span class="dot"></span><span id="voice-text">Слушаю…</span></div>
+
+<!-- Каждое приложение — строго на весь экран (в ОС это гарантирует Cage/Wayland) -->
+<section id="app" aria-hidden="true">
+  <div id="app-head"><span class="ic"></span><b></b>
+    <button id="app-close">✕ Закрыть (Esc)</button></div>
+  <div id="app-body"></div>
+</section>
+
+<script src="js/apps.js"></script>
+<script src="js/wave.js"></script>
+<script src="js/xmb.js"></script>
+<script src="js/voice.js"></script>
+</body>
+</html>

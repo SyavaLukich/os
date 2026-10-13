@@ -1,0 +1,23 @@
+# XrossOS — пакеты Alpine Linux 3.20 (образ ~180 МБ)
+linux-lts
+alpine-base
+eudev
+cage
+# Лёгкий WebKit для оболочки вместо тяжёлого Chromium:
+cog
+wpewebkit
+mesa-egl
+mesa-dri-gallium
+# Приложения (все запускаются Cage на весь экран)
+firefox-esr
+mpv
+# Голос офлайн: Vosk + русская модель (~40 МБ) кладётся в /usr/share/vosk
+python3
+py3-pip
+# Сеть / звук
+NetworkManager
+wireplumber
+pipewire
+alsa-utils
+font-noto
+ttf-dejavu

@@ -1,0 +1,15 @@
+#!/bin/sh
+# XrossOS: сессия = Cage (Wayland kiosk) + оболочка XMB.
+# Cage принципиально показывает ОДНО приложение на весь экран —
+# поэтому «все приложения в полноэкранном режиме» гарантирует сам композитор.
+export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/tmp/xdg}
+mkdir -p "$XDG_RUNTIME_DIR" && chmod 700 "$XDG_RUNTIME_DIR"
+export WLR_RENDERER=pixman   # работает даже без GPU; при наличии — vulkan/gles2
+
+# Локальный сервер оболочки (busybox httpd, без сети наружу)
+busybox httpd -p 127.0.0.1:8077 -h /usr/share/xross/shell
+
+# Голосовой демон (офлайн Vosk, шлёт команды оболочке через websocket :8078)
+xross-voice &
+
+exec cage -s -- cog -P xross "http://127.0.0.1:8077/index.html"
