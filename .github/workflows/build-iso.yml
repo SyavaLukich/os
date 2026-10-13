@@ -26,8 +26,30 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq grub-pc-bin grub-efi-amd64-bin xorriso mtools cpio gzip
 
-      - name: Build Live ISO
-        run: sh os/build-live-iso.sh
+      - name: Preflight Alpine packages
+        run: |
+          for p in alpine-base linux-lts linux-firmware-amdgpu eudev openrc \
+                   xorg-server xf86-video-amdgpu xf86-input-libinput mesa-dri-gallium mesa-egl \
+                   xinit xterm font-dejavu libx11 alsa-utils squashfs-tools \
+                   NetworkManager linux-firmware-mediatek build-base libx11-dev linux-headers; do
+            if ! docker run --rm alpine:3.20 apk add --simulate "$p" >/dev/null 2>&1; then
+              echo "::error title=APK package not found::$p"
+              exit 1
+            fi
+            echo "ok: $p"
+          done
+
+      - name: Build rootfs Docker image
+        run: sh os/build-live-iso.sh build
+
+      - name: Export kernel and squashfs
+        run: sh os/build-live-iso.sh export
+
+      - name: Repack initramfs with live init
+        run: sh os/build-live-iso.sh initrd
+
+      - name: Assemble ISO with grub-mkrescue
+        run: sh os/build-live-iso.sh iso
 
       - name: Verify ISO contents
         run: |
