@@ -1,15 +1,17 @@
 #!/bin/sh
-# XrossOS: сессия = Cage (Wayland kiosk) + оболочка XMB.
-# Cage принципиально показывает ОДНО приложение на весь экран —
-# поэтому «все приложения в полноэкранном режиме» гарантирует сам композитор.
+# XrossOS 0.2: XLibre (или Xorg) + нативная оболочка xross на C/Xlib.
+# xross сам является минимальным WM: каждое чужое окно — на весь экран.
 export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/tmp/xdg}
 mkdir -p "$XDG_RUNTIME_DIR" && chmod 700 "$XDG_RUNTIME_DIR"
-export WLR_RENDERER=pixman   # работает даже без GPU; при наличии — vulkan/gles2
 
-# Локальный сервер оболочки (busybox httpd, без сети наружу)
-busybox httpd -p 127.0.0.1:8077 -h /usr/share/xross/shell
+# Голос: микрофон -> xross-voiced (Vosk) -> FIFO -> оболочка (клавиша V — подсказка)
+mkfifo /tmp/xross-voice.fifo 2>/dev/null || true
+if [ -d /usr/share/vosk/model-ru ] && command -v arecord >/dev/null; then
+    ( arecord -q -r 16000 -f S16_LE -c 1 -t raw 2>/dev/null \
+      | xross-voiced /usr/share/vosk/model-ru > /tmp/xross-voice.fifo 2>/dev/null ) &
+fi
 
-# Голосовой демон (офлайн Vosk, шлёт команды оболочке через websocket :8078)
-xross-voice &
-
-exec cage -s -- cog -P xross "http://127.0.0.1:8077/index.html"
+XSERVER=$(command -v XLibre || command -v Xorg)
+# -nocursor не ставим: на тачпаде X550EA курсор нужен.
+# +extension GLX нужен radeonsi; COMPOSITE/RANDR не отключаем, но picom не запускаем.
+exec xinit /usr/bin/xross -- "$XSERVER" :0 vt7 -nolisten tcp -dpi 96

@@ -1,23 +1,33 @@
-# XrossOS — пакеты Alpine Linux 3.20 (образ ~180 МБ)
+# XrossOS 0.2 — пакеты Alpine Linux (образ под ASUS X550EA)
+# Больше нет браузера-оболочки/Cage/Wayland: только X11/XLibre + libX11.
 linux-lts
 alpine-base
 eudev
-cage
-# Лёгкий WebKit для оболочки вместо тяжёлого Chromium:
-cog
-wpewebkit
-mesa-egl
+# ── Графика: XLibre (форк X.Org) или Xorg из репозитория ──
+xlibre-server
+# если xlibre ещё нет в вашем зеркале Alpine:
+# xorg-server xf86-video-amdgpu xf86-input-libinput
 mesa-dri-gallium
-# Приложения (все запускаются Cage на весь экран)
+mesa-gl
+mesa-egl
+mesa-va-gallium
+libva-utils
+# ── Драйвер именно Radeon HD 8330 (GCN 1.0, Southern Islands) ──
+xf86-video-amdgpu
+# ── Оболочка (собирается из src/, рантайм — только libX11) ──
+libx11
+font-dejavu
+# ── Приложения: xross-WM каждое разворачивает на весь экран ──
+xterm
 firefox-esr
 mpv
-# Голос офлайн: Vosk + русская модель (~40 МБ) кладётся в /usr/share/vosk
-python3
-py3-pip
-# Сеть / звук
-NetworkManager
-wireplumber
-pipewire
+retroarch
+kodi
+# ── Голос офлайн: Vosk + русская модель в /usr/share/vosk/model-ru ──
 alsa-utils
-font-noto
-ttf-dejavu
+espeak-ng
+python3
+# ── Сеть / питание X550EA ──
+NetworkManager
+tlp
+zram-init

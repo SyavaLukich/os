@@ -1,48 +1,53 @@
-# ✦ XrossOS 0.1 «Wave»
+# ✦ XrossOS 0.2 «Swirl»
 
-Лёгкая ОС на базе **Alpine Linux** с графической оболочкой **XMB в стиле
-PS3 / PS Vita / PSP**: живая «волна», плавные анимации, голосовое управление
-по-русски и запуск **всех** приложений строго на весь экран.
+Лёгкая ОС на Alpine Linux с оболочкой, **написанной на C поверх Xlib
+(X11 / XLibre)** — без браузера и JavaScript. Интерфейс: XMB от PS3/PSP,
+сферы от PS Vita и заставка со свёрлом + орбитальное меню от **Dreamcast**.
+Голосовое управление по-русски, все приложения — только на весь экран.
+Эталонное железо: **ASUS X550EA** (AMD A4-5000, Radeon HD 8330, 1366×768, 4 ГБ).
 
-![база](https://img.shields.io/badge/base-Alpine%20Linux%203.20-blue) ![образ](https://img.shields.io/badge/ISO-~180%20МБ-green) ![ОЗУ оболочки](https://img.shields.io/badge/RAM%20shell-~120%20МБ-orange)
+![base](https://img.shields.io/badge/base-Alpine%20Linux-blue) ![shell](https://img.shields.io/badge/shell-C%20%2F%20Xlib%20~60_KB-green) ![target](https://img.shields.io/badge/target-ASUS%20X550EA-orange)
 
-## 🚀 Быстрый старт (прототип оболочки, 10 секунд)
+## 🚀 Сборка и запуск
 
 ```bash
-cd shell && python3 -m http.server 8077
-# открыть http://localhost:8077
+make -C src                 # нужен только libX11-dev; по умолчанию -march=btver2 (Jaguar)
+src/xross --version         # xross 0.2 (Swirl)
+make -C src voice           # голосовой демон xross-voiced (Vosk, офлайн)
+
+# на машине с X11/XLibre:
+DISPLAY=:0 src/xross        # или вся сессия: os/overlay/usr/bin/xross-session
+docker build -f os/Dockerfile -t xrossos . && docker run --rm xrossos
+sh os/build-iso.sh          # загрузочный ISO -> dist/
 ```
-Или: `docker build -f os/Dockerfile -t xrossos . && docker run --rm -p 8077:8077 xrossos`
 
 ## 🎮 Управление
 
 | Способ | Действия |
 |---|---|
-| Клавиатура | `←→↑↓` навигация · `Enter` выбрать · `Esc` назад · `V` голос |
-| Геймпад | крестовина, `✕` выбрать, `○` назад, кнопка PS — домой |
-| Мышь / тач | клики, колесо, свайпы |
+| Клавиатура | `←→↑↓` · `Enter` выбрать · `Esc` назад · `F1` XMB ↔ Dreamcast · `V` голос |
+| Из внешнего приложения | `Ctrl+Esc` или `Home` — вернуться в оболочку |
+| Геймпад | `/dev/input/js0`: крест — выбрать, круг — назад, L/R — категории |
+| Мышь | клики по сферам и пунктам |
 | **Голос (ru)** | «открой музыку», «вниз», «выбери», «домой», «который час», «помощь» |
 
-## 📱 Приложения (все — на весь экран)
-Настройки (темы волны как на PS3), голос, фото, музыка (синтезатор WebAudio),
-видео, игры «Пузыри» (PS Vita) и «Змейка», браузер, магазин, файлы, терминал
-(`neofetch` попробуйте), заметки, профиль и трофеи.
+## 📱 Приложения
+Встроенные экраны: настройки (темы PS3 + цвет свёрла Dreamcast EU/JP/US,
+FPS-экономия), голос, о системе, фото, музыка, «Пузыри», «Змейка», магазин,
+файлы (`$HOME`), заметки, профиль, достижения. Внешние (Firefox, mpv,
+RetroArch, Kodi, xterm) оболочка-WM **принудительно** разворачивает на весь
+экран — оконного режима в системе нет.
 
-## 🏗 Собрать настоящий ISO
-
-```bash
-sh os/build-iso.sh      # нужен docker -> dist/xrossos-0.1.iso
-dd if=dist/xrossos-0.1.iso of=/dev/sdX bs=4M status=progress
-```
-Как устроено и почему полноэкранность гарантирует сам композитор Cage —
-в [docs/architecture.md](docs/architecture.md).
+## 💻 Оптимизация под ASUS X550EA
+Всё — в [docs/x550ea.md](docs/x550ea.md): `-march=btver2`, amdgpu для GCN 1.0
+(HD 8330) вместо radeon, radeonsi+glamor+TearFree, zram вместо swap на HDD,
+30 FPS от батареи, без композитора. Конфиги лежат готовые в `os/overlay/etc/`.
 
 ## 📂 Структура
 ```
-shell/            оболочка XMB (ноль зависимостей, без сборки)
-  index.html  css/xmb.css  js/{apps,wave,xmb,voice}.js
-os/
-  build-iso.sh  packages.txt  Dockerfile
-  overlay/        файлы поверх Alpine: xross-session, xross-launch, OpenRC-сервис
-docs/architecture.md
+src/          xross.c (оболочка+WM), xross-voiced.c (голос), Makefile (btver2)
+os/           packages.txt, build-iso.sh, Dockerfile, overlay/ (XLibre-сессия, xorg.conf.d под X550EA)
+hardware/     x550ea.mk — паспорт эталонного железа
+docs/         architecture.md, x550ea.md
 ```
+Подробнее: [docs/architecture.md](docs/architecture.md)

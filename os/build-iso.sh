@@ -20,4 +20,6 @@ docker run --rm -v "$PWD:/work" -w /work alpine:3.20 sh -euxc '
 echo "Готово: dist/xrossos-0.1.iso"
 echo "Пакеты образа:      os/packages.txt"
 echo "Файлы поверх базы:  os/overlay/  ->  скопировать в корень rootfs перед mkimage"
-echo "Сессия:             os/overlay/usr/bin/xross-session (Cage + Cog, все приложения fullscreen)"
+echo "Сессия:             os/overlay/usr/bin/xross-session (XLibre/Xorg + xross C/Xlib, все приложения fullscreen)"
+echo "Сборка оболочки:    make -C src   (C/Xlib, -march=btver2 под ASUS X550EA, см. docs/x550ea.md)"
+echo "Перед mkimage:      собранный src/xross положить в overlay как usr/bin/xross"
