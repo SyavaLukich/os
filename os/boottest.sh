@@ -13,7 +13,7 @@ xorriso -osirrox on -indev "$ISO" -extract /boot bootfiles >/dev/null 2>&1
 [ -f bootfiles/vmlinuz ] && [ -f bootfiles/initramfs.img ] || { echo "::error title=BOOTTEST::в ISO нет ядра/initramfs"; exit 1; }
 
 # shellcheck disable=SC2086
-qemu-system-x86_64 $ACCEL -machine pc -cpu qemu64 -m 2048 -smp 2 \
+qemu-system-x86_64 $ACCEL -machine pc -cpu Nehalem -m 2048 -smp 2 \
     -kernel bootfiles/vmlinuz -initrd bootfiles/initramfs.img \
     -append "console=tty0 console=ttyS0" \
     -drive file="$ISO",format=raw,readonly=on,if=none,id=xcd \
