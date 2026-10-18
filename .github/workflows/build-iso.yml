@@ -99,6 +99,8 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq qemu-system-x86 socat imagemagick tesseract-ocr xorriso
       - name: Boot ISO in QEMU and screenshot
+        env:
+          BOOTTEST_APPS: "1"
         run: sh os/boottest.sh dist/xrossos-0.2-x550ea.iso
       - name: Upload screenshot (always)
         if: always()
@@ -108,5 +110,7 @@ jobs:
           path: |
             boottest-screenshot.png
             boottest-ocr.txt
+            boottest-firefox.png
+            boottest-firefox-ocr.txt
             boottest-serial.log
           if-no-files-found: warn

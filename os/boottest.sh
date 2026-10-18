@@ -42,6 +42,27 @@ while [ $i -lt 120 ]; do
     fi
     if grep -qi "XrossOS" boottest-ocr.txt; then found=1; ann BOOTTEST "OK - XrossOS GUI за ~$(( $(date +%s) - T0 )) c (poll $i)"; break; fi
 done
+# Фаза 2 (BOOTTEST_APPS=1): запуск Firefox из XMB клавишами, как пользователь.
+# Экран загрузки: Enter -> XMB; 3x Right -> категория Сеть; Enter -> Firefox.
+if [ -n "$found" ] && [ "${BOOTTEST_APPS:-0}" = "1" ]; then
+    ann APPTEST "launch Firefox: Enter, Right x3, Enter"
+    for k in ret right right right ret; do
+        printf 'sendkey %s\n' "$k" | socat - UNIX-CONNECT:/tmp/xross-mon >/dev/null 2>&1 || true
+        sleep 2
+    done
+    appfound=""; ai=0; AT0=$(date +%s)
+    while [ $ai -lt 30 ]; do
+        ai=$((ai+1)); sleep 10
+        printf 'screendump %s/shot.ppm\n' "$PWD" | socat - UNIX-CONNECT:/tmp/xross-mon >/dev/null 2>&1 || continue
+        convert shot.ppm boottest-firefox.png 2>/dev/null || cp shot.ppm boottest-firefox.png
+        tesseract boottest-firefox.png boottest-firefox-ocr -l eng >/dev/null 2>&1 || true
+        [ -f boottest-firefox-ocr.txt ] || continue
+        if grep -qiE "firefox|mozilla|new tab|enter address" boottest-firefox-ocr.txt; then
+            appfound=1; ann APPTEST "OK - Firefox window za ~$(( $(date +%s) - AT0 )) c"; break
+        fi
+    done
+    [ -n "$appfound" ] || echo "::error title=APPTEST::Firefox window not recognized (boottest-firefox.png artifact)"
+fi
 printf 'quit\n' | socat - UNIX-CONNECT:/tmp/xross-mon >/dev/null 2>&1 || true
 cp /tmp/xross-serial.log boottest-serial.log 2>/dev/null || : > boottest-serial.log
 
