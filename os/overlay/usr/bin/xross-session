@@ -11,6 +11,7 @@ if [ -d /usr/share/vosk/model-ru ] && command -v arecord >/dev/null; then
       | xross-voiced /usr/share/vosk/model-ru > /tmp/xross-voice.fifo 2>/dev/null ) &
 fi
 
+rm -f /tmp/.X0-lock /tmp/.X11-unix/X0 2>/dev/null || true
 XSERVER=$(command -v XLibre || command -v Xorg)
 # -nocursor не ставим: на тачпаде X550EA курсор нужен.
 # +extension GLX нужен radeonsi; COMPOSITE/RANDR не отключаем, но picom не запускаем.

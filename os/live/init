@@ -84,7 +84,11 @@ for n in eth0 enp0s3 end0; do ip link set "$n" up 2>/dev/null && udhcpc -i "$n" 
 mkdir -p /tmp/xdg && chmod 700 /tmp/xdg
 echo "XROSS stage2: starting X session (log: /var/log/xross.log)"
 while true; do
-    su - player -c /usr/bin/xross-session >>/var/log/xross.log 2>&1
+    if command -v openvt >/dev/null 2>&1; then
+        openvt -c 7 -s -w -- su - player -c /usr/bin/xross-session >>/var/log/xross.log 2>&1
+    else
+        su - player -c /usr/bin/xross-session >>/var/log/xross.log 2>&1
+    fi
     echo "XROSS stage2: X session exited rc=$?, last log lines:"
     tail -n 40 /var/log/xross.log 2>/dev/null
     echo "XROSS stage2: /var/log/Xorg.0.log (tail):"
