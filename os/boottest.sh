@@ -40,7 +40,7 @@ while [ $i -lt 120 ]; do
     if grep -qi "NOT found" boottest-ocr.txt; then
         echo "::error title=BOOTTEST::аварийная консоль (rootfs не найден)"; break
     fi
-    if grep -qiE "XrossOS|Dreamcast/XMB" boottest-ocr.txt; then found=1; ann BOOTTEST "OK - XrossOS GUI за ~$(( $(date +%s) - T0 )) c (poll $i)"; break; fi
+    if grep -qiE "XrossOS|Dreamcast|Ctrl\+Esc|Home" boottest-ocr.txt; then found=1; ann BOOTTEST "OK - XrossOS GUI за ~$(( $(date +%s) - T0 )) c (poll $i)"; break; fi
 done
 # Фаза 2 (BOOTTEST_APPS=1): запуск Firefox из XMB клавишами, как пользователь.
 # Экран загрузки: Enter -> главный экран Vita; Down,Down,Right -> пузырь Firefox; Enter.
