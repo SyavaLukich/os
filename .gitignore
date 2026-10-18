@@ -1,0 +1,4 @@
+src/xross
+src/xross-voiced
+*.o
+dist/

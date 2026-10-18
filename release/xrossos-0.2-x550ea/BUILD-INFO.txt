@@ -1,0 +1,8 @@
+XrossOS 0.2 (Swirl) — готовая сборка для ASUS X550EA
+Дата сборки: 2026-10-13
+Таргет: x86_64, AMD A4-5000 (Jaguar, btver2), Radeon HD 8330, 1366x768
+Компилятор: gcc (Debian 12.2.0-14+deb12u1) 12.2.0
+Флаги xross: -O2 -march=btver2 -mtune=btver2 -flto -ffunction-sections -fdata-sections -std=c99 -Wl,--gc-sections -s -lX11 -lm
+Флаги xross-voiced: -O2 -march=btver2 -mtune=btver2 -flto -s -ldl (Vosk — dlopen в рантайме)
+Рантайм: бандл lib/ (glibc ld-linux + libc/libm + libX11/libxcb/libXau/libXdmcp/libbsd/libmd), запуск через run.sh — работает на musl/Alpine и glibc
+Проверка без X: ./run.sh --version ; GUI: нужен X11/XLibre (DISPLAY)

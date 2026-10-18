@@ -1,0 +1,5 @@
+# Питание/диск X550EA: HDD — mq-deadline/BFQ дружелюбнее к случайному доступу с оболочкой
+ACTION=="add|change", KERNEL=="sd[a-z]", ATTR{queue/rotational}=="1", ATTR{queue/scheduler}="mq-deadline"
+# USB autosuspend для экономии батареи APU, кроме приёмников ввода
+ACTION=="add", SUBSYSTEM=="usb", TEST=="power/control", ATTR{power/control}="auto"
+ACTION=="add", SUBSYSTEM=="usb", ATTR{bInterfaceClass}=="03", ATTR{power/control}="on"

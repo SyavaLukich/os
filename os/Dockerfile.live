@@ -1,0 +1,46 @@
+# XrossOS Live rootfs (Alpine, ASUS X550EA) — из этого образа собирается ISO.
+# Стадия 1: компиляция оболочки musl/gcc именно под Jaguar (btver2).
+FROM alpine:3.20 AS build
+RUN apk add --no-cache build-base libx11-dev linux-headers
+COPY src/ /src/
+RUN make -C /src && make -C /src voice
+
+# Стадия 2: корневая ФС live-системы
+FROM alpine:3.20
+RUN apk add --no-cache \
+    alpine-base linux-lts linux-firmware-amdgpu eudev openrc \
+    xorg-server xf86-video-amdgpu xf86-video-vesa xf86-video-fbdev xf86-video-vmware xf86-input-libinput xf86-input-evdev mesa-dri-gallium mesa-egl \
+    virtualbox-guest-additions-x11 virtualbox-guest-additions-openrc \
+    xinit xterm font-dejavu font-cursor-misc adwaita-icon-theme libx11 alsa-utils squashfs-tools firefox-esr mpv \
+    networkmanager linux-firmware-mediatek \
+    && adduser -D -h /home/player -s /bin/sh player \
+    && addgroup player video; addgroup player input; addgroup player audio; addgroup player netdev; addgroup player tty \
+    && rc-update add devfs sysinit && rc-update add dmesg sysinit && rc-update add udev sysinit && rc-update add udev-trigger sysinit \
+    && rc-update add networkmanager default && rc-update add virtualbox-guest-additions default && grep '^player:' /etc/passwd
+
+COPY --from=build /src/xross /usr/bin/xross
+COPY --from=build /src/xross-voiced /usr/bin/xross-voiced
+COPY os/overlay/ /
+RUN chmod +x /usr/bin/xross-session /usr/bin/xross-launch /etc/init.d/xross \
+    && rc-update add xross default \
+    && rm -rf /usr/share/doc /usr/share/man /usr/share/gtk-doc /var/cache/apk/* \
+    && mkdir -p /etc/mkinitfs/features.d \
+    && printf '%s\n' \
+        'kernel/drivers/ata/ahci.ko*' 'kernel/drivers/ata/libahci.ko*' \
+        'kernel/drivers/ata/libata*.ko*' \
+        'kernel/drivers/ata/ata_piix.ko*' 'kernel/drivers/ata/ata_generic.ko*' \
+        'kernel/drivers/ata/pata_acpi.ko*' \
+        'kernel/drivers/scsi/scsi_mod.ko*' 'kernel/drivers/scsi/scsi_common.ko*' \
+        'kernel/drivers/scsi/sr_mod.ko*' 'kernel/drivers/scsi/sd_mod.ko*' \
+        'kernel/drivers/nvme/host/nvme.ko*' 'kernel/drivers/nvme/host/nvme-core.ko*' \
+        'kernel/drivers/mmc/core/*.ko*' 'kernel/drivers/mmc/host/sdhci*.ko*' \
+        'kernel/drivers/block/virtio_blk.ko*' 'kernel/drivers/virtio/*.ko*' \
+        'kernel/drivers/usb/core/*.ko*' 'kernel/drivers/usb/common/*.ko*' \
+        'kernel/drivers/usb/storage/usb-storage.ko*' 'kernel/drivers/usb/storage/uas.ko*' \
+        'kernel/drivers/usb/host/xhci-pci.ko*' 'kernel/drivers/usb/host/ehci-pci.ko*' \
+        'kernel/drivers/usb/host/ohci-pci.ko*' 'kernel/drivers/usb/host/uhci-hcd.ko*' \
+        > /etc/mkinitfs/features.d/xross.modules \
+    && KVER=$(ls /lib/modules | head -n1) \
+    && mkinitfs -F "base cdrom squashfs xross" -o /boot/initramfs-xross "$KVER" \
+    && echo "xross: kernel $KVER, initramfs готов" \
+    && firefox-esr --version && mpv --version | head -n1 && xterm -version

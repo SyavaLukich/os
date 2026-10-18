@@ -1,0 +1,20 @@
+#!/bin/sh
+# XrossOS 0.2: XLibre (или Xorg) + нативная оболочка xross на C/Xlib.
+# xross сам является оконным менеджером: внешние приложения — в окнах с рамками.
+export XDG_RUNTIME_DIR=/tmp/xdg-player
+# GUI-приложения в X11-сессии (без Wayland-прослоек в VM)
+export MOZ_ENABLE_WAYLAND=0 GDK_BACKEND=x11
+mkdir -p "$XDG_RUNTIME_DIR" 2>/dev/null; chmod 700 "$XDG_RUNTIME_DIR" 2>/dev/null || true
+
+# Голос: микрофон -> xross-voiced (Vosk) -> FIFO -> оболочка (клавиша V — подсказка)
+mkfifo /tmp/xross-voice.fifo 2>/dev/null || true
+if [ -d /usr/share/vosk/model-ru ] && command -v arecord >/dev/null; then
+    ( arecord -q -r 16000 -f S16_LE -c 1 -t raw 2>/dev/null \
+      | xross-voiced /usr/share/vosk/model-ru > /tmp/xross-voice.fifo 2>/dev/null ) &
+fi
+
+rm -f /tmp/.X0-lock /tmp/.X11-unix/X0 2>/dev/null || true
+XSERVER=$(command -v XLibre || command -v Xorg)
+# -nocursor не ставим: на тачпаде X550EA курсор нужен.
+# +extension GLX нужен radeonsi; COMPOSITE/RANDR не отключаем, но picom не запускаем.
+exec xinit /usr/bin/xross -- "$XSERVER" :0 vt7 -nolisten tcp -dpi 96
