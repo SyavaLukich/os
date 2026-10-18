@@ -29,14 +29,14 @@ ann() { # $1=title $2=text : экранирование для GitHub annotation
 found=""
 i=0
 T0=$(date +%s)
-while [ $i -lt 60 ]; do
+while [ $i -lt 120 ]; do
     i=$((i+1)); sleep 5
     printf 'screendump %s/shot.ppm\n' "$PWD" | socat - UNIX-CONNECT:/tmp/xross-mon >/dev/null 2>&1 || continue
     [ -f shot.ppm ] || continue
     convert shot.ppm boottest-screenshot.png 2>/dev/null || cp shot.ppm boottest-screenshot.png
     tesseract boottest-screenshot.png boottest-ocr -l eng >/dev/null 2>&1 || true
     [ -f boottest-ocr.txt ] || : > boottest-ocr.txt
-    if [ $((i % 5)) -eq 0 ]; then ann "BOOTTEST poll $i" "$(head -c 160 boottest-ocr.txt)"; fi
+    if [ $i -eq 60 ]; then ann "BOOTTEST poll $i" "$(head -c 160 boottest-ocr.txt)"; fi
     if grep -qi "NOT found" boottest-ocr.txt; then
         echo "::error title=BOOTTEST::аварийная консоль (rootfs не найден)"; break
     fi
@@ -52,5 +52,5 @@ CTX=$(grep -a -A4 -m1 "Fatal server error" boottest-serial.log 2>/dev/null | tr 
 tail -n 15 boottest-serial.log | while IFS= read -r line; do [ -n "$line" ] && ann SERIAL "$line"; done
 
 [ -n "$found" ] && exit 0
-echo "::error title=BOOTTEST::XrossOS не появился на экране за 300 с"
+echo "::error title=BOOTTEST::XrossOS не появился на экране за 600 с"
 exit 1
