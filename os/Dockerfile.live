@@ -13,10 +13,10 @@ RUN apk add --no-cache \
     virtualbox-guest-additions-x11 virtualbox-guest-additions-openrc \
     xinit xterm font-dejavu libx11 alsa-utils squashfs-tools \
     networkmanager linux-firmware-mediatek \
-    && adduser -D -s /bin/sh guest \
-    && addgroup guest video; addgroup guest input; addgroup guest audio; addgroup guest netdev; addgroup guest tty \
+    && adduser -D -h /home/player -s /bin/sh player \
+    && addgroup player video; addgroup player input; addgroup player audio; addgroup player netdev; addgroup player tty \
     && rc-update add devfs sysinit && rc-update add dmesg sysinit && rc-update add udev sysinit && rc-update add udev-trigger sysinit \
-    && rc-update add networkmanager default && rc-update add virtualbox-guest-additions default
+    && rc-update add networkmanager default && rc-update add virtualbox-guest-additions default && grep '^player:' /etc/passwd
 
 COPY --from=build /src/xross /usr/bin/xross
 COPY --from=build /src/xross-voiced /usr/bin/xross-voiced
