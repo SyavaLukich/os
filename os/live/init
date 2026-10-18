@@ -51,6 +51,11 @@ mkdir -p /newroot/dev /newroot/proc /newroot/sys
 mount --bind /dev /newroot/dev 2>/dev/null || mount -t devtmpfs devtmpfs /newroot/dev
 mount --bind /proc /newroot/proc 2>/dev/null || true
 mount --bind /sys /newroot/sys 2>/dev/null || true
+# /run в squashfs вырезан при экспорте (mksquashfs -e run): OpenRC падает
+# на mkdir /run/openrc/*. Даём ему настоящий tmpfs, как при обычной загрузке.
+mkdir -p /newroot/run /newroot/tmp
+mount -t tmpfs -o mode=0755 tmpfs /newroot/run 2>/dev/null || true
+chmod 1777 /newroot/tmp 2>/dev/null || true
 mkdir -p /newroot/media/iso
 mount --bind /media/iso /newroot/media/iso 2>/dev/null || true
 
