@@ -63,7 +63,7 @@ if [ -n "$found" ] && [ "${BOOTTEST_APPS:-0}" = "1" ]; then
     done
     if [ -z "$appfound" ]; then
         echo "::error title=APPTEST::Firefox window not recognized (boottest-firefox.png artifact)"
-        head -c 400 boottest-firefox-ocr.txt 2>/dev/null | tr '\n' '|' | sed 's/%/%25/g' | while IFS= read -r l; do ann APPOCR "$l"; done
+        OCRHEAD=$(head -c 400 boottest-firefox-ocr.txt 2>/dev/null | tr '\n' '|' | sed 's/%/%25/g'); [ -n "$OCRHEAD" ] && ann APPOCR "$OCRHEAD"
     fi
     # Фаза 3: выход из приложения кнопкой Home -> снова домашний экран Vita
     ann EXITTEST "exit Firefox: sendkey home"
