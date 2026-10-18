@@ -1,6 +1,6 @@
 #!/bin/sh
 # XrossOS 0.2: XLibre (или Xorg) + нативная оболочка xross на C/Xlib.
-# xross сам является минимальным WM: каждое чужое окно — на весь экран.
+# xross сам является оконным менеджером: внешние приложения — в окнах с рамками.
 export XDG_RUNTIME_DIR=/tmp/xdg-player
 # GUI-приложения в X11-сессии (без Wayland-прослоек в VM)
 export MOZ_ENABLE_WAYLAND=0 GDK_BACKEND=x11

@@ -45,7 +45,7 @@ typedef struct { const char *cat, *title, *sub, *glyph; unsigned rgb; int ext; c
 enum { MODE_BOOT, MODE_DESKTOP, MODE_APP };
 enum { APP_NONE = -1 };
 /* action-коды хитбоксов */
-enum { ACT_ITEM, ACT_SETTING, ACT_TRACK, ACT_STORE, ACT_CLOSEWIN, ACT_MENU, ACT_MENUITEM };
+enum { ACT_ITEM, ACT_SETTING, ACT_TRACK, ACT_STORE, ACT_CLOSEWIN, ACT_MENU, ACT_MENUITEM, ACT_MINWIN, ACT_DESK };
 
 static Display *dpy; static Window root_win, shell_win; static Pixmap backbuf;
 static GC gc; static XFontSet fontset; static XFontStruct *fixedfont;
@@ -118,6 +118,35 @@ static int text_w(const char *s){
 }
 static void text_c(const char *s,int cx,int y,unsigned rgb){ text(s,cx-text_w(s)/2,y,rgb); }
 static void add_hit(int x,int y,int w,int h,int action,int arg){ if(nhits<128) hits[nhits++]=(Hit){x,y,w,h,action,arg}; }
+
+static Cursor arrow_cursor;
+static Cursor make_arrow_cursor(void){
+    /* классическая стрелка Mac: чёрное тело, белый контур; hot spot (1,1) */
+    static const char *src[16]={
+        "X...............","XX..............","XXX.............","XXXX............",
+        "XXXXX...........","XXXXXX..........","XXXXXXX.........","XXXXXXXX........",
+        "XXXX.XXX........","XX...XXX........","X.....XXX.......","......XXX.......",
+        ".......XX.......","........X.......","................","................"};
+    static const char *msk[16]={
+        "XX..............","XXX.............","XXXX............","XXXXX...........",
+        "XXXXXX..........","XXXXXXX.........","XXXXXXXX........","XXXXXXXXX.......",
+        "XXXX.XXXX.......","XX...XXXX.......","X.....XXXX......","......XXXX......",
+        ".......XXX......","........XX......","................","................"};
+    Pixmap sp=XCreatePixmap(dpy,root_win,16,16,1), mp=XCreatePixmap(dpy,root_win,16,16,1);
+    if(!sp || !mp) return None;
+    GC g=XCreateGC(dpy,sp,0,NULL);
+    for(int pass=0;pass<2;pass++){
+        Drawable dd=pass? mp:sp; const char **rows=pass? msk:src;
+        XSetForeground(dpy,g,0); XFillRectangle(dpy,dd,g,0,0,16,16);
+        XSetForeground(dpy,g,1);
+        for(int y=0;y<16;y++) for(int x=0;x<16;x++) if(rows[y][x]=='X') XDrawPoint(dpy,dd,g,x,y);
+    }
+    XFreeGC(dpy,g);
+    XColor blk={0,0,0,0,DoRed|DoGreen|DoBlue}, wht={0,65535,65535,65535,DoRed|DoGreen|DoBlue};
+    Cursor c=XCreatePixmapCursor(dpy,sp,mp,&blk,&wht,1,1);
+    XFreePixmap(dpy,sp); XFreePixmap(dpy,mp);
+    return c;
+}
 
 /* ── Platinum (Mac OS 7–9) + Haiku примитивы ───────────────────────────
  * Скошенная панель: светлая кромка сверху-слева, тёмная снизу-справа. */
@@ -230,6 +259,7 @@ static void terminate_child(void){
 /* ── рамка окна внешнего приложения (оконный менеджер) ── */
 static Window frame_win; static int fx=120, fy=60, fw=760, fh=520;
 static int client_max, drag_on, drag_dx, drag_dy, save_x, save_y, save_w, save_h;
+static int frame_hidden, internal_min;
 #define TB 22 /* высота полосы заголовка */
 static void draw_frame(void){
     if (!frame_win || client_win==None) return;
@@ -242,6 +272,7 @@ static void draw_frame(void){
     XSetForeground(dpy,fgc,px(0xdddddd)); XFillRectangle(dpy,frame_win,fgc,18,5,12,12);
     XSetForeground(dpy,fgc,px(0x000000)); XDrawRectangle(dpy,frame_win,fgc,18,5,12,12);
     XDrawRectangle(dpy,frame_win,fgc,fw-18,5,12,12); XDrawRectangle(dpy,frame_win,fgc,fw-15,8,6,6);
+    XDrawRectangle(dpy,frame_win,fgc,fw-36,5,12,12); XDrawLine(dpy,frame_win,fgc,fw-33,14,fw-27,14);
     XSetForeground(dpy,fgc,px(0x000000));
     const char *t="Приложение";
     if (fontset) Xutf8DrawString(dpy,frame_win,fontset,fgc,fw/2-40,16,t,strlen(t));
@@ -266,7 +297,7 @@ static void close_client(void){
 static void open_app_idx(int ai){
     if (ai<0) return;
     if (APPS[ai].ext){ launch_external(APPS[ai].cmd, APPS[ai].title); return; }
-    open_app=ai; mode=MODE_APP;
+    open_app=ai; mode=MODE_APP; internal_min=0;
     char b[128]; snprintf(b,sizeof b,"%s · Esc — закрыть окно",APPS[ai].title); toast_set(b);
 }
 
@@ -319,7 +350,7 @@ static void do_select(void){
     if (mode==MODE_DESKTOP) open_app_idx(item_idx);
 }
 static void do_back(void){
-    if (mode==MODE_APP){ open_app=APP_NONE; mode=MODE_DESKTOP; if(music_track>=0) music_track=-1; notes_save(); return; }
+    if (mode==MODE_APP){ open_app=APP_NONE; internal_min=0; mode=MODE_DESKTOP; if(music_track>=0) music_track=-1; notes_save(); return; }
     if (client_win!=None||child_pid>0) close_client();
 }
 
@@ -339,24 +370,57 @@ static void render_desktop_bg(void){
 }
 
 /* ───────────────────────── отрисовка экранов ───────────────────────── */
-static int menu_open;
+static int menu_open; /* 0=закрыто, 1=XrossOS, 2=Файл, 3=Вид, 4=Окно */
+static void menu_item(const char *label,int x,int y,int w,int code){
+    text(label,x+10,y+17,0x000000); add_hit(x,y,w,22,ACT_MENUITEM,code);
+}
 static void draw_topbar(void){
     fill_rect(0,0,W,24,0xdddddd);
     fg(0x777777); XDrawLine(dpy,backbuf,gc,0,24,W,24);
-    text("◆ XrossOS",10,17,0x000000); add_hit(0,0,110,24,ACT_MENU,0);
-    text("Файл",122,17,0x000000); text("Правка",186,17,0x000000); text("Вид",262,17,0x000000); text("Окно",310,17,0x000000);
+    text("◆ XrossOS",10,17,0x000000); add_hit(0,0,110,24,ACT_MENU,1);
+    text("Файл",122,17,0x000000); add_hit(114,0,64,24,ACT_MENU,2);
+    text("Правка",186,17,0x000000);
+    text("Вид",262,17,0x000000); add_hit(254,0,52,24,ACT_MENU,3);
+    text("Окно",310,17,0x000000); add_hit(302,0,60,24,ACT_MENU,4);
+    if (menu_open) fill_rect(menu_open==1?2:(menu_open==2?114:(menu_open==3?254:302)),1,menu_open==1?108:66,22,0xbbbbbb);
     time_t tt=time(NULL); char b[96]; struct tm *tmv=localtime(&tt);
     int bat=battery_pct();
     if (bat>=0){ char bb[40]; snprintf(bb,sizeof bb,"Батарея %d%%",bat); text(bb,W-330,17,0x000000); }
     snprintf(b,sizeof b,"%02d:%02d",tmv->tm_hour,tmv->tm_min);
     text(b,W-64,17,0x000000);
     text("V — голос",W-250,17,0x444444);
-    if (menu_open){
-        panel(4,26,240,92);
-        text("О системе",16,50,0x000000); add_hit(4,30,240,28,ACT_MENUITEM,2);
-        text("Настройки системы",16,78,0x000000); add_hit(4,58,240,28,ACT_MENUITEM,0);
-        text("Голосовое управление",16,106,0x000000); add_hit(4,86,240,30,ACT_MENUITEM,1);
+    /* выпадающие меню */
+    if (menu_open==1){ panel(2,26,250,76);
+        menu_item("О системе",2,28,250,102); menu_item("Настройки системы",2,50,250,100); menu_item("Голосовое управление",2,72,250,101);
+    } else if (menu_open==2){ panel(114,26,210,54);
+        menu_item("Открыть выбранное",114,28,210,200); menu_item("Закрыть окно",114,50,210,201);
+    } else if (menu_open==3){ panel(254,26,230,76);
+        menu_item("Стол: бирюзовый",254,28,230,300); menu_item("Стол: серый",254,50,230,301); menu_item("Стол: синий",254,72,230,302);
+    } else if (menu_open==4){ panel(302,26,280,76);
+        menu_item("Рабочий стол",302,28,280,400);
+        menu_item(open_app>=0?APPS[open_app].title:"(нет внутреннего окна)",302,50,280,401);
+        menu_item(frame_win?"Внешнее приложение":"(нет внешнего окна)",302,72,280,402);
     }
+}
+
+/* нижняя панель окон в духе Haiku Deskbar: кнопки открытых окон */
+static void draw_deskbar(void){
+    if (mode==MODE_BOOT) return;
+    fill_rect(0,H-28,W,28,0xdddddd); bevel(0,H-28,W,28,1);
+    text("Окна:",8,H-10,0x000000);
+    int x=64;
+    if (open_app>=0){
+        int w=text_w(APPS[open_app].title)+24;
+        fill_rect(x,H-24,w,20,0xbbbbbb); bevel(x,H-24,w,20, mode==MODE_APP&&!internal_min?0:1);
+        text(APPS[open_app].title,x+10,H-10,0x000000); add_hit(x,H-24,w,20,ACT_DESK,1); x+=w+8;
+    }
+    if (frame_win){
+        const char *t="Внешнее приложение"; int w=text_w(t)+24;
+        fill_rect(x,H-24,w,20,0xbbbbbb); bevel(x,H-24,w,20, frame_hidden?1:0);
+        text(t,x+10,H-10,0x000000); add_hit(x,H-24,w,20,ACT_DESK,2); x+=w+8;
+    }
+    char b[256]; snprintf(b,sizeof b,"%s", mode==MODE_APP&&open_app>=0?APPS[open_app].sub:"Рабочий стол");
+    text(b,x+8,H-10,0x444444);
 }
 
 static void draw_boot(double t){
@@ -377,15 +441,15 @@ static void draw_boot(double t){
 static void draw_desktop(double t){
     render_desktop_bg();
     nhits=0;
-    int cellw=150, cellh=104, x0=W-DESK_COLS*cellw-10, y0=40;
+    int cellw=124, cellh=88, x0=W-DESK_COLS*cellw-6, y0=36;
     for(int i=0;i<NAPPS;i++){
         int col=i%DESK_COLS, row=i/DESK_COLS;
-        int cx=x0+col*cellw+cellw/2, cy=y0+row*cellh+34;
+        int cx=x0+col*cellw+cellw/2, cy=y0+row*cellh+28;
         int focused=(i==item_idx);
         desk_icon(cx,cy,&APPS[i],focused);
         /* подпись: в одну или две строки, у выбранной — чёрным по белому */
         const char *title=APPS[i].title;
-        int ly=cy+44;
+        int ly=cy+38;
         if (focused){ int tw=text_w(title); fill_rect(cx-tw/2-4,ly-15,tw+8,20,0xffffff); }
         /* перенос по последнему пробелу, если не влезает */
         char l1[64]="",l2[64]="";
@@ -397,11 +461,6 @@ static void draw_desktop(double t){
         if(l2[0]) text_c(l2,cx,ly+18,focused?0x000000:0xffffff);
         add_hit(cx-cellw/2,cy-30,cellw,cellh-8,ACT_ITEM,i);
     }
-    /* нижняя полоса: выбранное приложение и подсказка */
-    fill_rect(0,H-26,W,26,0xdddddd); bevel(0,H-26,W,26,1);
-    char b[320]; snprintf(b,sizeof b,"%s — %s",APPS[item_idx].title,APPS[item_idx].sub);
-    text(b,10,H-8,0x000000);
-    text("Enter — открыть · двойной клик — открыть · Esc — закрыть окно",W-560,H-8,0x444444);
 }
 
 static void card(int x,int y,int w,int h,const char *title){
@@ -414,6 +473,7 @@ static void draw_app(double t){
     panel(14,36,W-28,H-68);                          /* окно */
     titlebar(14,36,W-28,a->title,1);
     add_hit(14+18,36+5,12,12,ACT_CLOSEWIN,0);
+    add_hit(W-14-30,36+5,12,12,ACT_MINWIN,0);
     text("Esc — закрыть",W-170,88,0x444444);
     int y=92;
     if (!strcmp(a->title,"Настройки системы")){
@@ -469,7 +529,7 @@ static void draw(double t){
     if (mode==MODE_BOOT) draw_boot(t-boot_t0);
     else if (mode==MODE_APP && open_app>=0) draw_app(t);
     else draw_desktop(t);
-    draw_topbar();
+    draw_topbar(); draw_deskbar();
     if (now_sec()<toast_until){ int w=text_w(toast_msg)+36; fill_rect(W/2-w/2,34,w,30,0xdddddd); bevel(W/2-w/2,34,w,30,1); text_c(toast_msg,W/2,54,0x000000); }
     XCopyArea(dpy,backbuf,shell_win,gc,0,0,W,H,0,0); XFlush(dpy);
 }
@@ -482,8 +542,23 @@ static void hit_click(int x,int y){
             case ACT_ITEM: { double nw=now_sec();
                 if (item_idx==h->arg && last_item==h->arg && nw-last_when<0.45) open_app_idx(h->arg);
                 item_idx=h->arg; last_item=h->arg; last_when=nw; break; }
-            case ACT_MENU: menu_open=!menu_open; break;
-            case ACT_MENUITEM: menu_open=0; open_app_idx(h->arg); break;
+            case ACT_MENU: menu_open = (menu_open==h->arg? 0:h->arg); break;
+            case ACT_MENUITEM: { int code=h->arg; menu_open=0;
+                if (code==100) open_app_idx(0);
+                else if (code==101) open_app_idx(1);
+                else if (code==102) open_app_idx(2);
+                else if (code==200) do_select();
+                else if (code==201) do_back();
+                else if (code>=300 && code<303){ cfg_desk=code-300; config_save(); }
+                else if (code==400){ mode=MODE_DESKTOP; XRaiseWindow(dpy,shell_win); }
+                else if (code==401 && open_app>=0){ mode=MODE_APP; internal_min=0; }
+                else if (code==402 && frame_win){ frame_hidden=0; XMapRaised(dpy,frame_win); if(client_win!=None) XSetInputFocus(dpy,client_win,RevertToParent,CurrentTime); }
+                break; }
+            case ACT_MINWIN: if (mode==MODE_APP){ internal_min=1; mode=MODE_DESKTOP; } break;
+            case ACT_DESK:
+                if (h->arg==1 && open_app>=0){ if (mode==MODE_APP && !internal_min){ internal_min=1; mode=MODE_DESKTOP; } else { internal_min=0; mode=MODE_APP; } }
+                else if (h->arg==2 && frame_win){ if (frame_hidden){ frame_hidden=0; XMapRaised(dpy,frame_win); if(client_win!=None) XSetInputFocus(dpy,client_win,RevertToParent,CurrentTime); } else { frame_hidden=1; XUnmapWindow(dpy,frame_win); } }
+                break;
             case ACT_CLOSEWIN: do_back(); break;
             case ACT_SETTING:
                 if(h->arg<3) cfg_desk=h->arg;
@@ -502,6 +577,11 @@ static void key_press(XEvent *ev){
         else if (ks==XK_Return) strncat(notes_buf,"\n",sizeof notes_buf-strlen(notes_buf)-1);
         else if (len>0){ buf[len]=0; strncat(notes_buf,buf,sizeof notes_buf-strlen(notes_buf)-1); }
         notes_save(); return;
+    }
+    if (ks==XK_Tab && (ev->xkey.state&Mod1Mask)){
+        if (frame_win){ frame_hidden=0; XMapRaised(dpy,frame_win); if(client_win!=None) XSetInputFocus(dpy,client_win,RevertToParent,CurrentTime); }
+        else if (open_app>=0){ internal_min=0; mode=MODE_APP; }
+        return;
     }
     switch(ks){
         case XK_Escape: do_back(); break;
@@ -531,8 +611,10 @@ int main(int argc,char **argv){
     if(missing) XFreeStringList(missing);
     if(!fontset) fixedfont=XLoadQueryFont(dpy,"fixed");
 
-    XSetWindowAttributes attr; attr.override_redirect=True; attr.background_pixel=px(0x05070f);
-    shell_win=XCreateWindow(dpy,root_win,0,0,W,H,0,CopyFromParent,InputOutput,CopyFromParent,CWOverrideRedirect|CWBackPixel,&attr);
+    arrow_cursor=make_arrow_cursor();
+    if (arrow_cursor) XDefineCursor(dpy,root_win,arrow_cursor);
+    XSetWindowAttributes attr; attr.override_redirect=True; attr.background_pixel=px(0x05070f); if(arrow_cursor){ attr.cursor=arrow_cursor; }
+    shell_win=XCreateWindow(dpy,root_win,0,0,W,H,0,CopyFromParent,InputOutput,CopyFromParent,CWOverrideRedirect|CWBackPixel|(arrow_cursor?CWCursor:0),&attr);
     XStoreName(dpy,shell_win,"XrossOS");
     XSelectInput(dpy,shell_win,ExposureMask|KeyPressMask|ButtonPressMask|PointerMotionMask|StructureNotifyMask);
     XMapRaised(dpy,shell_win);
@@ -565,6 +647,7 @@ int main(int argc,char **argv){
                     if (ev.xbutton.window==frame_win){
                         int bx=ev.xbutton.x, by=ev.xbutton.y;
                         if (by>=3 && by<=19 && bx>=14 && bx<=34){ close_client(); break; }
+                        if (by>=3 && by<=19 && bx>=fw-52 && bx<fw-34){ frame_hidden=1; XUnmapWindow(dpy,frame_win); break; }
                         if (by>=3 && by<=19 && bx>=fw-34){ /* развернуть/восстановить */
                             if (!client_max){ save_x=fx; save_y=fy; save_w=fw; save_h=fh; fx=0; fy=24; fw=W; fh=H-50; client_max=1; }
                             else { fx=save_x; fy=save_y; fw=save_w; fh=save_h; client_max=0; }
@@ -591,6 +674,7 @@ int main(int argc,char **argv){
                         frame_win=XCreateWindow(dpy,root_win,fx,fy,fw,fh,1,CopyFromParent,InputOutput,CopyFromParent,CWOverrideRedirect|CWBackPixel,&fa);
                         XStoreName(dpy,frame_win,"XrossWindow");
                         XSelectInput(dpy,frame_win,ExposureMask|ButtonPressMask|ButtonReleaseMask|PointerMotionMask);
+                        if (arrow_cursor) XDefineCursor(dpy,frame_win,arrow_cursor);
                         XSelectInput(dpy,w,StructureNotifyMask);
                         XSetWindowBorderWidth(dpy,w,0);
                         XReparentWindow(dpy,w,frame_win,1,TB);
