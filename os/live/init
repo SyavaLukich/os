@@ -103,12 +103,15 @@ while true; do
     else
         su - player -c /usr/bin/xross-session >>/var/log/xross.log 2>&1
     fi
-    echo "XROSS stage2: X session exited rc=$?, last log lines:"
-    tail -n 40 /var/log/xross.log 2>/dev/null
-    echo "XROSS stage2: /var/log/Xorg.0.log (tail):"
-    tail -n 60 /var/log/Xorg.0.log 2>/dev/null
-    echo "XROSS stage2: restart in 5s"
-    sleep 5
+    echo "XROSS stage2: X session exited rc=$?"
+    echo "===== XROSS X-ERROR SUMMARY (photo this) ====="
+    grep -a "(EE)" /var/log/Xorg.0.log 2>/dev/null | tail -n 10
+    grep -a "Fatal server error" -A2 /var/log/Xorg.0.log 2>/dev/null | tail -n 4
+    echo "XROSS dri/fb: $(ls /dev/dri /dev/fb* 2>/dev/null | tr '\n' ' ')"
+    echo "XROSS drm modules: $(lsmod 2>/dev/null | grep -aiE 'amdgpu|vmw|vbox|bochs|drm' | tr '\n' ' ' | head -c 250)"
+    echo "=============================================="
+    echo "XROSS stage2: restart in 20s"
+    sleep 20
 done
 EOS
 chmod +x /newroot/xross-stage2.sh

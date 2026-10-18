@@ -1,8 +1,8 @@
 #!/bin/sh
 # XrossOS 0.2: XLibre (или Xorg) + нативная оболочка xross на C/Xlib.
 # xross сам является минимальным WM: каждое чужое окно — на весь экран.
-export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/tmp/xdg}
-mkdir -p "$XDG_RUNTIME_DIR" && chmod 700 "$XDG_RUNTIME_DIR"
+export XDG_RUNTIME_DIR=/tmp/xdg-player
+mkdir -p "$XDG_RUNTIME_DIR" 2>/dev/null; chmod 700 "$XDG_RUNTIME_DIR" 2>/dev/null || true
 
 # Голос: микрофон -> xross-voiced (Vosk) -> FIFO -> оболочка (клавиша V — подсказка)
 mkfifo /tmp/xross-voice.fifo 2>/dev/null || true
