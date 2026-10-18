@@ -9,11 +9,11 @@ RUN make -C /src && make -C /src voice
 FROM alpine:3.20
 RUN apk add --no-cache \
     alpine-base linux-lts linux-firmware-amdgpu eudev openrc \
-    xorg-server xf86-video-amdgpu xf86-input-libinput mesa-dri-gallium mesa-egl \
+    xorg-server xf86-video-amdgpu xf86-video-vesa xf86-video-fbdev xf86-video-vmware xf86-input-libinput mesa-dri-gallium mesa-egl \
     xinit xterm font-dejavu libx11 alsa-utils squashfs-tools \
     networkmanager linux-firmware-mediatek \
     && adduser -D -s /bin/sh guest \
-    && addgroup guest video; addgroup guest input; addgroup guest audio; addgroup guest netdev \
+    && addgroup guest video; addgroup guest input; addgroup guest audio; addgroup guest netdev; addgroup guest tty \
     && rc-update add udev sysinit && rc-update add udev-trigger sysinit \
     && rc-update add networkmanager default
 

@@ -1,4 +1,12 @@
 #!/bin/sh
+# ВАЖНО: в initramfs Alpine есть только /bin/busybox, симлинки апплетов
+# создаёт штатный init. Мы заменили init — значит, ставим апплеты сами,
+# иначе sleep/mkdir/mount и т.д. "not found" (баг первого ISO).
+if [ -x /bin/busybox ]; then
+    /bin/busybox --install -s /bin
+elif [ -x /usr/bin/busybox ]; then
+    /usr/bin/busybox --install -s /bin
+fi
 # XrossOS Live: init для initramfs.
 # Находит ISO-носитель, монтирует rootfs.squashfs + overlay (записываемый tmpfs)
 # и делает switch_root в полноценную Alpine-систему с OpenRC.
@@ -28,18 +36,18 @@ for i in 1 2 3 4 5; do
 done
 
 if [ -z "$found" ]; then
-    echo "XrossOS: rootfs.squashfs не найден на ISO-носителе, аварийная консоль" >&2
-    exec sh
+    echo "XrossOS: rootfs.squashfs NOT found on boot media - emergency shell" >&2
+    exec sh </dev/console >/dev/console 2>&1
 fi
 
-mount -t squashfs -o loop,ro /media/iso/rootfs.squashfs /mnt/squash || exec sh
+mount -t squashfs -o loop,ro /media/iso/rootfs.squashfs /mnt/squash || exec sh </dev/console >/dev/console 2>&1
 mount -t tmpfs -o size=70% tmpfs /mnt/rw
 mkdir -p /mnt/rw/upper /mnt/rw/work
-mount -t overlay overlay -o lowerdir=/mnt/squash,upperdir=/mnt/rw/upper,workdir=/mnt/rw/work /newroot || exec sh
+mount -t overlay overlay -o lowerdir=/mnt/squash,upperdir=/mnt/rw/upper,workdir=/mnt/rw/work /newroot || exec sh </dev/console >/dev/console 2>&1
 
 for d in dev proc sys; do mount --move "/$d" "/newroot/$d" 2>/dev/null || true; done
 mkdir -p /newroot/media/iso
 mount --move /media/iso /newroot/media/iso 2>/dev/null || true
 
-echo "XrossOS Live: запуск системы…"
+echo "XrossOS Live: starting system..."
 exec switch_root /newroot /sbin/init
