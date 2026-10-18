@@ -90,9 +90,13 @@ if [ -x /sbin/udevd ]; then
     /sbin/udevd --daemon 2>/dev/null
     udevadm trigger --type=subsystems --action=add 2>/dev/null
     udevadm trigger --type=devices --action=add 2>/dev/null
-    udevadm settle --timeout=15 2>/dev/null
+    udevadm settle --timeout=6 2>/dev/null
 fi
-for m in amdgpu vmwgfx vboxvideo bochs drm_kms_helper i915; do modprobe "$m" 2>/dev/null; done
+# Драйвер GPU подберёт udev по PCI modalias; вручную - только если /dev/dri пуст
+if [ ! -e /dev/dri/card0 ]; then
+    for m in amdgpu vmwgfx vboxvideo bochs simpledrm i915; do modprobe "$m" 2>/dev/null; done
+    n=0; while [ ! -e /dev/dri/card0 ] && [ $n -lt 6 ]; do sleep 0.5; n=$((n+1)); done
+fi
 ip link set lo up 2>/dev/null
 for n in eth0 enp0s3 end0; do ip link set "$n" up 2>/dev/null && udhcpc -i "$n" -q -n -t 3 2>/dev/null & done
 mkdir -p /tmp/xdg && chmod 700 /tmp/xdg

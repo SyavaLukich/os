@@ -23,6 +23,20 @@ COPY --from=build /src/xross-voiced /usr/bin/xross-voiced
 COPY os/overlay/ /
 RUN chmod +x /usr/bin/xross-session /usr/bin/xross-launch /etc/init.d/xross \
     && rc-update add xross default \
+    && rm -rf /usr/share/doc /usr/share/man /usr/share/gtk-doc /var/cache/apk/* \
+    && mkdir -p /usr/share/mkinitfs/features.d \
+    && printf '%s\n' \
+        'kernel/drivers/ata/ahci.ko*' 'kernel/drivers/ata/libahci.ko*' \
+        'kernel/drivers/ata/ata_piix.ko*' 'kernel/drivers/ata/ata_generic.ko*' \
+        'kernel/drivers/ata/pata_acpi.ko*' \
+        'kernel/drivers/scsi/sr_mod.ko*' 'kernel/drivers/scsi/sd_mod.ko*' \
+        'kernel/drivers/nvme/host/nvme.ko*' 'kernel/drivers/nvme/host/nvme-core.ko*' \
+        'kernel/drivers/mmc/core/mmc_block.ko*' 'kernel/drivers/mmc/host/sdhci*.ko*' \
+        'kernel/drivers/block/virtio_blk.ko*' 'kernel/drivers/virtio/virtio_pci.ko*' \
+        'kernel/drivers/usb/storage/usb-storage.ko*' 'kernel/drivers/usb/storage/uas.ko*' \
+        'kernel/drivers/usb/host/xhci-pci.ko*' 'kernel/drivers/usb/host/ehci-pci.ko*' \
+        'kernel/drivers/usb/host/ohci-pci.ko*' 'kernel/drivers/usb/host/uhci-hcd.ko*' \
+        > /usr/share/mkinitfs/features.d/xross.modules \
     && KVER=$(ls /lib/modules | head -n1) \
-    && mkinitfs -F "base ata cdrom scsi usb squashfs ext2 virtio nvme mmc kms" -o /boot/initramfs-xross "$KVER" \
+    && mkinitfs -F "base cdrom squashfs xross" -o /boot/initramfs-xross "$KVER" \
     && echo "xross: kernel $KVER, initramfs готов"

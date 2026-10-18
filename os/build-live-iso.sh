@@ -16,7 +16,7 @@ do_export() {
     cp /boot/vmlinuz-lts /out/vmlinuz
     cp /boot/initramfs-xross /out/initramfs.orig.gz
     chmod 0644 /out/vmlinuz /out/initramfs.orig.gz
-    mksquashfs / /out/rootfs.squashfs -comp xz -b 1M -wildcards \
+    mksquashfs / /out/rootfs.squashfs -comp zstd -Xcompression-level 3 -b 1M -wildcards \
       -e proc sys dev run tmp out boot "rootfs.squashfs" etc/resolv.conf
     chmod 0644 /out/rootfs.squashfs
   '
@@ -39,7 +39,7 @@ do_iso() {
   cp dist/vmlinuz iso-stage/boot/vmlinuz
   cp dist/rootfs.squashfs iso-stage/rootfs.squashfs
   cat > iso-stage/boot/grub/grub.cfg <<'EOF'
-set timeout=5
+set timeout=1
 set default=0
 menuentry "XrossOS 0.2 Live (ASUS X550EA)" {
     linux /boot/vmlinuz quiet console=tty1
