@@ -16,7 +16,9 @@ xorriso -osirrox on -indev "$ISO" -extract /boot bootfiles >/dev/null 2>&1
 qemu-system-x86_64 $ACCEL -machine pc -cpu qemu64 -m 2048 -smp 2 \
     -kernel bootfiles/vmlinuz -initrd bootfiles/initramfs.img \
     -append "console=tty0 console=ttyS0" \
-    -cdrom "$ISO" -boot order=d \
+    -drive file="$ISO",format=raw,readonly=on,if=none,id=xcd \
+    -device ahci,id=ahci0 -device ide-cd,drive=xcd,bus=ahci0.0 \
+    -boot order=d \
     -vga std -display vnc=:0 -monitor unix:/tmp/xross-mon,server,nowait \
     -serial file:/tmp/xross-serial.log -daemonize
 

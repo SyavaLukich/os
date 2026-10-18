@@ -15,8 +15,8 @@ mount -t proc proc /proc 2>/dev/null
 mount -t sysfs sysfs /sys 2>/dev/null
 mount -t devtmpfs devtmpfs /dev 2>/dev/null
 
-for m in sr_mod cdrom iso9660 squashfs loop overlay sd_mod ahci libata \
-         usb_storage uas xhci_pci ehci_pci ohci_pci virtio_pci virtio_blk ata_piix; do
+for m in sr_mod cdrom iso9660 isofs squashfs loop overlay sd_mod scsi_mod ahci libahci libata ata_generic pata_acpi \
+         usb_storage uas xhci_pci ehci_pci ohci_pci virtio_pci virtio_blk ata_piix nvme; do
     modprobe "$m" 2>/dev/null
 done
 [ -x /sbin/mdev ] && mdev -s 2>/dev/null
@@ -24,8 +24,16 @@ sleep 1
 
 mkdir -p /media/iso /mnt/squash /mnt/rw /newroot
 found=""
-for i in 1 2 3 4 5 6 7 8 9 10; do
-    for dev in /dev/sr0 /dev/sr1 /dev/cdrom /dev/sd[a-z] /dev/vd[a-z]; do
+# Кандидаты: не только sr*, а ВСЕ блочные устройства из /sys/block
+# (VirtualBox: CD на SATA/AHCI, QEMU: IDE/NVMe - пути разные)
+for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+    cands=""
+    for b in /sys/block/*; do
+        n=${b#/sys/block/}
+        case "$n" in loop*|ram*) continue ;; esac
+        [ -b "/dev/$n" ] && cands="$cands /dev/$n"
+    done
+    for dev in $cands /dev/sr0 /dev/sr1 /dev/cdrom; do
         [ -b "$dev" ] || continue
         if mount -t iso9660 -o ro "$dev" /media/iso 2>/dev/null; then
             if [ -f /media/iso/rootfs.squashfs ]; then found=1; break 2; fi
@@ -37,6 +45,12 @@ done
 
 if [ -z "$found" ]; then
     echo "XrossOS: rootfs.squashfs NOT found on boot media - emergency shell" >&2
+    echo "--- XROSS DEBUG (photo of this screen helps) ---"
+    dmesg 2>/dev/null | grep -aiE "sr[0-9]|cdrom|cd-rom|ahci|ata[0-9]|scsi|nvme" | tail -n 12
+    echo "XROSS block: $(ls /sys/block 2>/dev/null | tr '\n' ' ')"
+    echo "XROSS dev: $(ls /dev 2>/dev/null | tr '\n' ' ')"
+    echo "XROSS lsmod: $(lsmod 2>/dev/null | tr '\n' ' ' | head -c 300)"
+    echo "------------------------------------------------"
     exec sh </dev/console >/dev/console 2>&1
 fi
 
