@@ -142,29 +142,93 @@ static void sphere(int cx,int cy,int r,unsigned rgb,int focused){
     if (focused) draw_circle(cx,cy,r+5,0xffffff,2);
 }
 
-/* 3D-пузырь PS Vita LiveArea: тень, объёмный градиент концентрическими
- * кругами со смещением к источнику света, блик и нижний рефлекс.
- * Только ядро X11 (без XRender/альфы) — дёшево даже на Jaguar. */
-static void sphere3d(int cx,int cy,int r,unsigned rgb,int focused,double pulse){
-    /* мягкая тень под пузырём */
-    fg(blend(0x05070f,0x000000,0.4));
-    XFillArc(dpy,backbuf,gc,cx-r,cy+r*62/100,r*2,r*46/100,0,360*64);
-    int rr = focused ? (int)(r*(1.10+0.04*pulse)) : r;
-    /* объём: от тёмного низа к светлому верху-леву */
-    for (int k=10;k>=1;k--){
-        int rad = rr*k/10;
-        int ox = cx - rr*22/100*k/10, oy = cy - rr*26/100*k/10;
-        double lt = (10-k)/10.0;
-        unsigned c = blend(blend(rgb,0x000000,0.30), blend(rgb,0xffffff,0.38), lt);
-        fill_circle(ox,oy,rad,c);
+/* ── Полностью 3D пузырь: попиксельный сферический шейдинг ─────────────
+ * Для каждой точки сферы считаем нормаль и освещаем по модели:
+ * diffuse (Lambert) + specular (Blinn-Phong) + Fresnel по краю +
+ * отражение окружения (светлое «небо» сверху, тёмная «земля» снизу).
+ * Результат рендерится ОДИН раз в кэшируемый спрайт (Pixmap + маска-круг)
+ * и дальше просто копируется — Jaguar не считает попиксельно каждый кадр. */
+typedef struct { unsigned rgb; int r; Pixmap pix, mask; } BubbleSprite;
+static BubbleSprite bubble_sprites[96]; static int nbubble_sprites;
+
+static unsigned long pixel_rgb(unsigned rgb){
+    Visual *v = DefaultVisual(dpy,screen_no);
+    unsigned long rm=v->red_mask, gm=v->green_mask, bm=v->blue_mask;
+    if (!rm || !gm || !bm) return px(rgb);
+    int rs=0, gs=0, bs=0; while (rm && !(rm&1)) { rm>>=1; rs++; } while (gm && !(gm&1)) { gm>>=1; gs++; } while (bm && !(bm&1)) { bm>>=1; bs++; }
+    unsigned long r8=(rgb>>16)&255, g8=(rgb>>8)&255, b8=rgb&255;
+    return ((r8*rm/255)<<rs) | ((g8*gm/255)<<gs) | ((b8*bm/255)<<bs);
+}
+static int shade255(double v){ if (v<0) return 0; if (v>255) return 255; return (int)v; }
+
+static BubbleSprite *bubble_sprite(unsigned rgb,int r){
+    for (int i=0;i<nbubble_sprites;i++)
+        if (bubble_sprites[i].rgb==rgb && bubble_sprites[i].r==r) return &bubble_sprites[i];
+    if (nbubble_sprites>=96 || r<4) return NULL;
+    const int pad=8, sz=2*(r+pad), c=sz/2;
+    Pixmap pix=XCreatePixmap(dpy,root_win,sz,sz,DefaultDepth(dpy,screen_no));
+    Pixmap mask=XCreatePixmap(dpy,root_win,sz,sz,1);
+    if (!pix || !mask){ if(pix) XFreePixmap(dpy,pix); if(mask) XFreePixmap(dpy,mask); return NULL; }
+    GC mgc=XCreateGC(dpy,mask,0,NULL);
+    XSetForeground(dpy,mgc,0); XFillRectangle(dpy,mask,mgc,0,0,sz,sz);
+    XSetForeground(dpy,mgc,1); XFillArc(dpy,mask,mgc,pad,pad,r*2,r*2,0,360*64);
+    XFreeGC(dpy,mgc);
+    XImage *im=XCreateImage(dpy,DefaultVisual(dpy,screen_no),DefaultDepth(dpy,screen_no),ZPixmap,0,NULL,sz,sz,32,0);
+    if (!im){ XFreePixmap(dpy,pix); XFreePixmap(dpy,mask); return NULL; }
+    im->data=(char*)malloc((size_t)im->bytes_per_line*sz);
+    if (!im->data){ XDestroyImage(im); XFreePixmap(dpy,pix); XFreePixmap(dpy,mask); return NULL; }
+    /* свет: сверху-слева-спереди; half-вектор для specular */
+    const double lx=-0.42, ly=-0.58, lz=0.70;
+    double hx=lx, hy=ly, hz=lz+1.0; double hl=sqrt(hx*hx+hy*hy+hz*hz); hx/=hl; hy/=hl; hz/=hl;
+    int br=(rgb>>16)&255, bgc=(rgb>>8)&255, bb=rgb&255;
+    for (int y=0;y<sz;y++) for (int x=0;x<sz;x++){
+        double nx=(x-c)/(double)r, ny=(y-c)/(double)r;
+        double d2=nx*nx+ny*ny;
+        if (d2>=1.0){ XPutPixel(im,x,y,0); continue; }
+        double nz=sqrt(1.0-d2);
+        double diff=lx*nx+ly*ny+lz*nz; if (diff<0) diff=0;
+        double ndh=hx*nx+hy*ny+hz*nz; if (ndh<0) ndh=0;
+        double spec=pow(ndh,64.0);                    /* узкий блик «стекла» */
+        double fres=pow(1.0-nz,3.0);                  /* светящийся ободок по краю */
+        double sky=0.5-0.5*ny, ground=0.5+0.5*ny;     /* отражение окружения */
+        double shade=0.24+0.92*diff;
+        double env=sky*0.20-ground*0.10;
+        int R=shade255(br*shade + 255*(spec*0.95+fres*0.30) + br*env + sky*22);
+        int G=shade255(bgc*shade + 255*(spec*0.95+fres*0.30) + bgc*env + sky*22);
+        int B=shade255(bb*shade + 255*(spec*1.00+fres*0.38) + bb*env + sky*30);
+        XPutPixel(im,x,y,pixel_rgb(((unsigned)R<<16)|((unsigned)G<<8)|(unsigned)B));
     }
-    /* блик-«стекло» сверху-слева и рефлекс снизу */
-    fill_circle(cx-rr*38/100,cy-rr*44/100,rr*26/100, blend(rgb,0xffffff,0.78));
-    fill_circle(cx-rr*42/100,cy-rr*50/100,rr*13/100, 0xffffff);
-    fg(blend(rgb,0xffffff,0.28));
-    XDrawArc(dpy,backbuf,gc,cx-rr*62/100,cy+rr*28/100,rr*124/100,rr*56/100,200*64,140*64);
+    XPutImage(dpy,pix,gc,im,0,0,0,0,sz,sz);
+    XDestroyImage(im);
+    BubbleSprite *sp=&bubble_sprites[nbubble_sprites++];
+    sp->rgb=rgb; sp->r=r; sp->pix=pix; sp->mask=mask;
+    return sp;
+}
+
+static void sphere3d(int cx,int cy,int r,unsigned rgb,int focused,double pulse){
+    /* объёмная тень под пузырём */
+    fg(blend(0x05070f,0x000000,0.4));
+    XFillArc(dpy,backbuf,gc,cx-r,cy+r*60/100,r*2,r*46/100,0,360*64);
+    int rr = focused ? (int)(r*1.12) : r;
+    BubbleSprite *sp=bubble_sprite(rgb,rr);
+    if (sp){
+        int pad=8, sz=2*(rr+pad);
+        XSetClipMask(dpy,gc,sp->mask);
+        XSetClipOrigin(dpy,gc,cx-sz/2,cy-sz/2);
+        XCopyArea(dpy,sp->pix,backbuf,gc,0,0,sz,sz,cx-sz/2,cy-sz/2);
+        XSetClipMask(dpy,gc,None);
+        XSetClipOrigin(dpy,gc,0,0);
+    } else { /* запасной путь, если кэш переполнен */
+        for (int k=10;k>=1;k--){
+            int rad=rr*k/10, ox=cx-rr*22/100*k/10, oy=cy-rr*26/100*k/10;
+            fill_circle(ox,oy,rad,blend(blend(rgb,0x000000,0.30),blend(rgb,0xffffff,0.38),(10-k)/10.0));
+        }
+    }
     draw_circle(cx,cy,rr, blend(rgb,0xffffff,0.35), 1);
-    if (focused){ draw_circle(cx,cy,rr+6,0xffffff,2); draw_circle(cx,cy,rr+11,blend(rgb,0xffffff,0.45),1); }
+    if (focused){
+        draw_circle(cx,cy,rr+6,0xffffff,2);
+        if (pulse>0.5) draw_circle(cx,cy,rr+11,blend(rgb,0xffffff,0.45),1);
+    }
 }
 
 /* Dreamcast-свёрл: логарифмическая спираль полилинией */
@@ -404,8 +468,8 @@ static void draw_vita_home(double t){
         int focused=(i==item_idx);
         int r=cellh*36/100; if(r>46) r=46; if(r<26) r=26;
         sphere3d(cx,cy,r,APPS[i].rgb,focused,pulse);
-        /* глиф приложения по центру пузыря */
-        if (APPS[i].glyph) text_c(APPS[i].glyph,cx,cy+7,0xffffff);
+        /* глиф приложения: тень + белый — буква «лежит» на сфере */
+        if (APPS[i].glyph){ text_c(APPS[i].glyph,cx+1,cy+8,blend(APPS[i].rgb,0x000000,0.55)); text_c(APPS[i].glyph,cx,cy+7,0xffffff); }
         if (focused){
             /* подпись выбранного пузыря — как в LiveArea */
             text_c(APPS[i].title,cx,cy+r+24,0xffffff);
@@ -415,8 +479,7 @@ static void draw_vita_home(double t){
     /* карточка выбранного приложения внизу + точки страниц */
     int panel_y=H-118; if(panel_y<y0+cellh*rows+8) panel_y=y0+cellh*rows+8;
     fill_rect(28,panel_y,W-56,64,0x101a30);
-    draw_circle(66,panel_y+32,17,blend(APPS[item_idx].rgb,0xffffff,.3),2);
-    fill_circle(66,panel_y+32,14,APPS[item_idx].rgb);
+    sphere3d(66,panel_y+32,15,APPS[item_idx].rgb,0,0);
     if (APPS[item_idx].glyph) text_c(APPS[item_idx].glyph,66,panel_y+39,0xffffff);
     text(APPS[item_idx].title,96,panel_y+30,0xffffff);
     text(APPS[item_idx].sub,96,panel_y+52,0x8fa0b8);
@@ -433,7 +496,7 @@ static void draw_dc(double t){
     nhits=0;
     for(int i=0;i<4;i++){
         double a=t*0.22 + i*M_PI/2.0; int cx=W/2+(int)(cos(a)*210), cy=H/2-30+(int)(sin(a)*92);
-        int sel=(cat_idx%4==i); sphere(cx,cy,sel?46:38,cols[i],sel); text_c(names[i],cx,cy+70,0xffffff);
+        int sel=(cat_idx%4==i); sphere3d(cx,cy,sel?46:38,cols[i],sel,0.5+0.5*sin(t*3.2)); text_c(names[i],cx,cy+70,0xffffff);
         add_hit(cx-52,cy-52,104,104,ACT_DC_ORBIT,i);
     }
     text_c("Dreamcast-меню · Enter — открыть раздел · F1 — XMB",W/2,H-56,0xdbe7f5);
@@ -478,7 +541,7 @@ static void draw_app(double t){
         if (music_track>=0) text("Звук на реальной ОС: файлы открывает mpv/VLC на весь экран; здесь — визуализация",28,H-80,0x8fa0b8);
     } else if (!strcmp(a->title,"Пузыри")){
         char b[160]; snprintf(b,sizeof b,"Лопнуто: %d / 10 · клик или касание по сфере",bubble_score); text(b,28,y+8,0xffffff);
-        for(int i=0;i<10;i++){ if(!bubbles[i].alive) continue; double bob=sin(t*2+i)*6; sphere((int)bubbles[i].x,(int)(bubbles[i].y+bob),(int)bubbles[i].r,0x4cc9f0,false); }
+        for(int i=0;i<10;i++){ if(!bubbles[i].alive) continue; double bob=sin(t*2+i)*6; sphere3d((int)bubbles[i].x,(int)(bubbles[i].y+bob),(int)bubbles[i].r,0x4cc9f0,false,0); }
         /* хитбоксы сфер обновляются кликом через ACT_TILE с координатной проверкой в обработчике */
         add_hit(0,60,W,H-60,ACT_TILE,77);
     } else if (!strcmp(a->title,"Змейка")){
