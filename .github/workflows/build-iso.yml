@@ -9,6 +9,7 @@ on:
       - "os/Dockerfile.live"
       - "os/build-live-iso.sh"
       - "os/live/**"
+      - "os/boottest.sh"
       - "src/**"
 
 permissions:
