@@ -54,10 +54,10 @@ static Colormap cmap;
 
 static int mode = MODE_BOOT;
 static int item_idx = 0;
+static int icon_pos[32][2]; static int icon_init_done, icon_drag=-1, icon_dx, icon_dy, icon_moved;
 static double anim_item = 0.0; /* сглаживание выбора иконки */
 static double boot_t0;
 static int open_app = APP_NONE;                /* индекс в APPS или -1 */
-static Window client_win = None;               /* чужое полноэкранное окно */
 static pid_t child_pid = -1;
 static char toast_msg[256]; static double toast_until;
 static Hit hits[128]; static int nhits;
@@ -256,42 +256,69 @@ static void terminate_child(void){
         child_pid=-1;
     }
 }
-/* ── рамка окна внешнего приложения (оконный менеджер) ── */
-static Window frame_win; static int fx=120, fy=60, fw=760, fh=520;
-static int client_max, drag_on, drag_dx, drag_dy, save_x, save_y, save_w, save_h;
-static int frame_hidden, internal_min;
+/* ── Оконный менеджер: несколько внешних окон (как Finder/Haiku) ──
+ * Каждое окно: рамка с заголовком, активация кликом (передний план +
+ * фокус), перетаскивание, ресайз за нижний правый угол, сворачивание
+ * в Deskbar, «шторка» двойным кликом по заголовку, zoom-кнопка. */
+#define MAXWIN 8
 #define TB 22 /* высота полосы заголовка */
-static void draw_frame(void){
-    if (!frame_win || client_win==None) return;
-    GC fgc=XCreateGC(dpy,frame_win,0,NULL);
-    XSetForeground(dpy,fgc,px(0xdddddd)); XFillRectangle(dpy,frame_win,fgc,0,0,fw,TB);
-    XSetForeground(dpy,fgc,px(0x999999));
-    for(int yy=4;yy<TB-3;yy+=3) XDrawLine(dpy,frame_win,fgc,34,yy,fw-30,yy);
-    XSetForeground(dpy,fgc,px(ACCENT_RGB)); XFillRectangle(dpy,frame_win,fgc,4,3,10,16);
-    /* кнопка закрытия слева, разворачивания справа */
-    XSetForeground(dpy,fgc,px(0xdddddd)); XFillRectangle(dpy,frame_win,fgc,18,5,12,12);
-    XSetForeground(dpy,fgc,px(0x000000)); XDrawRectangle(dpy,frame_win,fgc,18,5,12,12);
-    XDrawRectangle(dpy,frame_win,fgc,fw-18,5,12,12); XDrawRectangle(dpy,frame_win,fgc,fw-15,8,6,6);
-    XDrawRectangle(dpy,frame_win,fgc,fw-36,5,12,12); XDrawLine(dpy,frame_win,fgc,fw-33,14,fw-27,14);
-    XSetForeground(dpy,fgc,px(0x000000));
+typedef struct { Window client, frame; int x,y,w,h, rx,ry,rw,rh; int maximized, shaded, hidden; } Win;
+static Win wins[MAXWIN]; static int nwins, active_win=-1;
+static int drag_win=-1, drag_mode; /* 1=move, 2=resize */
+static int drag_dx, drag_dy, internal_min;
+static double last_title_click; static int last_title_win=-1;
+
+static int win_by_frame(Window f){ for(int i=0;i<nwins;i++) if(wins[i].frame==f) return i; return -1; }
+static int win_by_client(Window c){ for(int i=0;i<nwins;i++) if(wins[i].client==c) return i; return -1; }
+static void draw_frame_idx(int wi){
+    if (wi<0||wi>=nwins) return; Win *w=&wins[wi]; int fw=w->w, active=(wi==active_win);
+    GC fgc=XCreateGC(dpy,w->frame,0,NULL);
+    XSetForeground(dpy,fgc,px(active?0xdddddd:0xbbbbbb)); XFillRectangle(dpy,w->frame,fgc,0,0,fw,TB);
+    if (active){ XSetForeground(dpy,fgc,px(0x999999)); for(int yy=4;yy<TB-3;yy+=3) XDrawLine(dpy,w->frame,fgc,34,yy,fw-30,yy); }
+    XSetForeground(dpy,fgc,px(ACCENT_RGB)); XFillRectangle(dpy,w->frame,fgc,4,3,10,16);
+    XSetForeground(dpy,fgc,px(active?0xdddddd:0xbbbbbb)); XFillRectangle(dpy,w->frame,fgc,18,5,12,12);
+    XSetForeground(dpy,fgc,px(0x000000)); XDrawRectangle(dpy,w->frame,fgc,18,5,12,12);
+    XDrawRectangle(dpy,w->frame,fgc,fw-18,5,12,12); XDrawRectangle(dpy,w->frame,fgc,fw-15,8,6,6);
+    XDrawRectangle(dpy,w->frame,fgc,fw-36,5,12,12); XDrawLine(dpy,w->frame,fgc,fw-33,14,fw-27,14);
     const char *t="Приложение";
-    if (fontset) Xutf8DrawString(dpy,frame_win,fontset,fgc,fw/2-40,16,t,strlen(t));
+    if (fontset){ int tw=0; XRectangle ink,logi; Xutf8TextExtents(fontset,t,strlen(t),&ink,&logi); tw=logi.width;
+        XSetForeground(dpy,fgc,px(0x000000)); Xutf8DrawString(dpy,w->frame,fontset,fgc,fw/2-tw/2,16,t,strlen(t)); }
+    /* grow-уголок снизу-справа */
+    if (!w->maximized){ XSetForeground(dpy,fgc,px(0x888888));
+        for(int i=0;i<3;i++) XDrawLine(dpy,w->frame,fgc,fw-4-i*4,w->h-1,fw-1,w->h-4-i*4); }
     XFreeGC(dpy,fgc); XFlush(dpy);
 }
-static void frame_apply(void){
-    if (!frame_win) return;
-    XMoveResizeWindow(dpy,frame_win,fx,fy,fw,fh);
-    if (client_win!=None) XMoveResizeWindow(dpy,client_win,0,TB,fw>40?fw-2:fw,fh>TB+2?fh-TB-2:fh-TB);
-    draw_frame();
+static void frame_apply_idx(int wi){
+    if (wi<0||wi>=nwins) return; Win *w=&wins[wi];
+    int hh=w->shaded? TB:w->h;
+    XMoveResizeWindow(dpy,w->frame,w->x,w->y,w->w,hh);
+    if (w->client!=None && !w->shaded) XMoveResizeWindow(dpy,w->client,1,TB,w->w>40?w->w-2:w->w,hh>TB+2?hh-TB-2:hh-TB);
+    draw_frame_idx(wi);
 }
-static void close_client(void){
-    if (client_win!=None){ XKillClient(dpy,client_win); client_win=None; }
-    terminate_child();
-    if (frame_win){ XDestroyWindow(dpy,frame_win); frame_win=None; }
-    client_max=0; drag_on=0;
+static void win_activate(int wi){
+    if (wi<0||wi>=nwins) return; Win *w=&wins[wi];
+    int prev=active_win; active_win=wi; w->hidden=0;
+    XMapRaised(dpy,w->frame);
+    if (w->client!=None) XSetInputFocus(dpy,w->client,RevertToParent,CurrentTime);
+    if (prev>=0&&prev!=wi&&prev<nwins) draw_frame_idx(prev);
+    draw_frame_idx(wi);
+}
+static void win_remove(int wi){
+    if (wi<0||wi>=nwins) return;
+    if (wins[wi].frame) XDestroyWindow(dpy,wins[wi].frame);
+    for(int i=wi;i<nwins-1;i++) wins[i]=wins[i+1];
+    nwins--; if (active_win>=nwins) active_win=nwins-1; if (active_win<0&&nwins>0) active_win=0;
+}
+static void close_client(void){ /* закрыть АКТИВНОЕ внешнее окно */
+    if (active_win>=0 && active_win<nwins){
+        Window c=wins[active_win].client;
+        if (c!=None) XKillClient(dpy,c);
+        win_remove(active_win);
+        if (nwins==0) terminate_child();
+    } else if (child_pid>0) terminate_child();
     XMapRaised(dpy,shell_win); XSetInputFocus(dpy,shell_win,RevertToParent,CurrentTime);
     mode=MODE_DESKTOP; open_app=APP_NONE;
-    toast_set("Приложение закрыто");
+    toast_set("Окно закрыто");
 }
 
 static void open_app_idx(int ai){
@@ -351,7 +378,7 @@ static void do_select(void){
 }
 static void do_back(void){
     if (mode==MODE_APP){ open_app=APP_NONE; internal_min=0; mode=MODE_DESKTOP; if(music_track>=0) music_track=-1; notes_save(); return; }
-    if (client_win!=None||child_pid>0) close_client();
+    if (nwins>0||child_pid>0) close_client();
 }
 
 /* ───────────────────────── фон рабочего стола ───────────────────────── */
@@ -399,7 +426,7 @@ static void draw_topbar(void){
     } else if (menu_open==4){ panel(302,26,280,76);
         menu_item("Рабочий стол",302,28,280,400);
         menu_item(open_app>=0?APPS[open_app].title:"(нет внутреннего окна)",302,50,280,401);
-        menu_item(frame_win?"Внешнее приложение":"(нет внешнего окна)",302,72,280,402);
+        menu_item(nwins>0?"Внешние окна — на передний план":"(нет внешних окон)",302,72,280,402);
     }
 }
 
@@ -414,10 +441,11 @@ static void draw_deskbar(void){
         fill_rect(x,H-24,w,20,0xbbbbbb); bevel(x,H-24,w,20, mode==MODE_APP&&!internal_min?0:1);
         text(APPS[open_app].title,x+10,H-10,0x000000); add_hit(x,H-24,w,20,ACT_DESK,1); x+=w+8;
     }
-    if (frame_win){
-        const char *t="Внешнее приложение"; int w=text_w(t)+24;
-        fill_rect(x,H-24,w,20,0xbbbbbb); bevel(x,H-24,w,20, frame_hidden?1:0);
-        text(t,x+10,H-10,0x000000); add_hit(x,H-24,w,20,ACT_DESK,2); x+=w+8;
+    for(int i=0;i<nwins;i++){
+        char tt[64]; snprintf(tt,sizeof tt,"Окно %d",i+1);
+        int w=text_w(tt)+24;
+        fill_rect(x,H-24,w,20,0xbbbbbb); bevel(x,H-24,w,20, wins[i].hidden?1:(i==active_win?0:1));
+        text(tt,x+10,H-10,0x000000); add_hit(x,H-24,w,20,ACT_DESK,10+i); x+=w+8;
     }
     char b[256]; snprintf(b,sizeof b,"%s", mode==MODE_APP&&open_app>=0?APPS[open_app].sub:"Рабочий стол");
     text(b,x+8,H-10,0x444444);
@@ -442,16 +470,15 @@ static void draw_desktop(double t){
     render_desktop_bg();
     nhits=0;
     int cellw=124, cellh=88, x0=W-DESK_COLS*cellw-6, y0=36;
+    if (!icon_init_done){ icon_init_done=1;
+        for(int i=0;i<NAPPS;i++){ icon_pos[i][0]=x0+(i%DESK_COLS)*cellw+cellw/2; icon_pos[i][1]=y0+(i/DESK_COLS)*cellh+28; } }
     for(int i=0;i<NAPPS;i++){
-        int col=i%DESK_COLS, row=i/DESK_COLS;
-        int cx=x0+col*cellw+cellw/2, cy=y0+row*cellh+28;
+        int cx=icon_pos[i][0], cy=icon_pos[i][1];
         int focused=(i==item_idx);
         desk_icon(cx,cy,&APPS[i],focused);
-        /* подпись: в одну или две строки, у выбранной — чёрным по белому */
         const char *title=APPS[i].title;
         int ly=cy+38;
         if (focused){ int tw=text_w(title); fill_rect(cx-tw/2-4,ly-15,tw+8,20,0xffffff); }
-        /* перенос по последнему пробелу, если не влезает */
         char l1[64]="",l2[64]="";
         if (text_w(title)>cellw-8){ const char *sp=strrchr(title,' ');
             if(sp){ snprintf(l1,sizeof l1,"%.*s",(int)(sp-title),title); snprintf(l2,sizeof l2,"%s",sp+1); }
@@ -461,6 +488,10 @@ static void draw_desktop(double t){
         if(l2[0]) text_c(l2,cx,ly+18,focused?0x000000:0xffffff);
         add_hit(cx-cellw/2,cy-30,cellw,cellh-8,ACT_ITEM,i);
     }
+    /* Корзина */
+    { int tx=W-64, ty=H-118; fill_rect(tx-13,ty-14,26,30,0xcccccc); bevel(tx-13,ty-14,26,30,1);
+      fg(0x777777); XDrawLine(dpy,backbuf,gc,tx-16,ty-14,tx+16,ty-14); XDrawLine(dpy,backbuf,gc,tx-4,ty-18,tx+4,ty-18);
+      text_c("Корзина",tx,ty+34,0xffffff); add_hit(tx-30,ty-22,60,62,ACT_DESK,99); }
 }
 
 static void card(int x,int y,int w,int h,const char *title){
@@ -511,6 +542,8 @@ static void draw_app(double t){
     } else if (!strcmp(a->title,"Файлы")){
         struct dirent **list=NULL; const char *home=getenv("HOME")?getenv("HOME"):".";
         int n=scandir(home,&list,NULL,alphasort); int shown=0;
+        { char hdr[160]; int cnt=0; for(int i=0;i<n;i++) if(list[i]->d_name[0]!='.') cnt++;
+          snprintf(hdr,sizeof hdr,"Домашний каталог · объектов: %d",cnt); text(hdr,28,y+10,0x444444); y+=28; }
         for(int i=0;i<n&&shown<12;i++){ if(list[i]->d_name[0]=='.'){ free(list[i]); continue; } card(28,y,W-56,50,list[i]->d_name); free(list[i]); y+=60; shown++; }
         free(list); if(!shown) text("Каталог пуст или недоступен",28,y+20,0x555555);
     } else if (!strcmp(a->title,"Заметки")){
@@ -535,13 +568,16 @@ static void draw(double t){
 }
 
 /* ───────────────────────── ввод ───────────────────────── */
-static void hit_click(int x,int y){
+static void icon_click(int idx){
     static int last_item=-1; static double last_when;
+    double nw=now_sec();
+    if (item_idx==idx && last_item==idx && nw-last_when<0.45) open_app_idx(idx);
+    item_idx=idx; last_item=idx; last_when=nw;
+}
+static void hit_click(int x,int y){
     for(int i=nhits-1;i>=0;i--){ Hit *h=&hits[i]; if(x>=h->x&&x<h->x+h->w&&y>=h->y&&y<h->y+h->h){
         switch(h->action){
-            case ACT_ITEM: { double nw=now_sec();
-                if (item_idx==h->arg && last_item==h->arg && nw-last_when<0.45) open_app_idx(h->arg);
-                item_idx=h->arg; last_item=h->arg; last_when=nw; break; }
+            case ACT_ITEM: icon_click(h->arg); break;
             case ACT_MENU: menu_open = (menu_open==h->arg? 0:h->arg); break;
             case ACT_MENUITEM: { int code=h->arg; menu_open=0;
                 if (code==100) open_app_idx(0);
@@ -552,12 +588,16 @@ static void hit_click(int x,int y){
                 else if (code>=300 && code<303){ cfg_desk=code-300; config_save(); }
                 else if (code==400){ mode=MODE_DESKTOP; XRaiseWindow(dpy,shell_win); }
                 else if (code==401 && open_app>=0){ mode=MODE_APP; internal_min=0; }
-                else if (code==402 && frame_win){ frame_hidden=0; XMapRaised(dpy,frame_win); if(client_win!=None) XSetInputFocus(dpy,client_win,RevertToParent,CurrentTime); }
+                else if (code==402 && nwins>0) win_activate(nwins-1);
                 break; }
             case ACT_MINWIN: if (mode==MODE_APP){ internal_min=1; mode=MODE_DESKTOP; } break;
             case ACT_DESK:
-                if (h->arg==1 && open_app>=0){ if (mode==MODE_APP && !internal_min){ internal_min=1; mode=MODE_DESKTOP; } else { internal_min=0; mode=MODE_APP; } }
-                else if (h->arg==2 && frame_win){ if (frame_hidden){ frame_hidden=0; XMapRaised(dpy,frame_win); if(client_win!=None) XSetInputFocus(dpy,client_win,RevertToParent,CurrentTime); } else { frame_hidden=1; XUnmapWindow(dpy,frame_win); } }
+                if (h->arg==99){ toast_set("Корзина пуста"); }
+                else if (h->arg==1 && open_app>=0){ if (mode==MODE_APP && !internal_min){ internal_min=1; mode=MODE_DESKTOP; } else { internal_min=0; mode=MODE_APP; } }
+                else if (h->arg>=10 && h->arg<10+MAXWIN){ int wi=h->arg-10;
+                    if (wi<nwins){ if (wins[wi].hidden) win_activate(wi);
+                        else if (wi==active_win){ wins[wi].hidden=1; XUnmapWindow(dpy,wins[wi].frame); }
+                        else win_activate(wi); } }
                 break;
             case ACT_CLOSEWIN: do_back(); break;
             case ACT_SETTING:
@@ -579,7 +619,7 @@ static void key_press(XEvent *ev){
         notes_save(); return;
     }
     if (ks==XK_Tab && (ev->xkey.state&Mod1Mask)){
-        if (frame_win){ frame_hidden=0; XMapRaised(dpy,frame_win); if(client_win!=None) XSetInputFocus(dpy,client_win,RevertToParent,CurrentTime); }
+        if (nwins>0) win_activate((active_win+1)%nwins);
         else if (open_app>=0){ internal_min=0; mode=MODE_APP; }
         return;
     }
@@ -641,71 +681,94 @@ int main(int argc,char **argv){
         while (XPending(dpy)){
             XEvent ev; XNextEvent(dpy,&ev);
             switch(ev.type){
-                case Expose: if (ev.xexpose.window==frame_win) draw_frame(); break;
+                case Expose: { int wi=win_by_frame(ev.xexpose.window); if (wi>=0) draw_frame_idx(wi); break; }
                 case ConfigureNotify: if(ev.xconfigure.window==shell_win){ W=ev.xconfigure.width; H=ev.xconfigure.height; XFreePixmap(dpy,backbuf); backbuf=XCreatePixmap(dpy,root_win,W,H,DefaultDepth(dpy,screen_no)); if(bg_cache){XFreePixmap(dpy,bg_cache); bg_cache=None;} } break;
-                case ButtonPress:
-                    if (ev.xbutton.window==frame_win){
-                        int bx=ev.xbutton.x, by=ev.xbutton.y;
+                case ButtonPress: {
+                    int wi=win_by_frame(ev.xbutton.window);
+                    if (wi>=0){ Win *wp=&wins[wi]; int bx=ev.xbutton.x, by=ev.xbutton.y;
+                        win_activate(wi);
                         if (by>=3 && by<=19 && bx>=14 && bx<=34){ close_client(); break; }
-                        if (by>=3 && by<=19 && bx>=fw-52 && bx<fw-34){ frame_hidden=1; XUnmapWindow(dpy,frame_win); break; }
-                        if (by>=3 && by<=19 && bx>=fw-34){ /* развернуть/восстановить */
-                            if (!client_max){ save_x=fx; save_y=fy; save_w=fw; save_h=fh; fx=0; fy=24; fw=W; fh=H-50; client_max=1; }
-                            else { fx=save_x; fy=save_y; fw=save_w; fh=save_h; client_max=0; }
-                            frame_apply(); break; }
-                        if (by<TB && !client_max){ drag_on=1; drag_dx=ev.xbutton.x_root-fx; drag_dy=ev.xbutton.y_root-fy; }
+                        if (by>=3 && by<=19 && bx>=wp->w-52 && bx<wp->w-34){ wp->hidden=1; XUnmapWindow(dpy,wp->frame); break; }
+                        if (by>=3 && by<=19 && bx>=wp->w-34){ /* zoom */
+                            if (!wp->maximized){ wp->rx=wp->x; wp->ry=wp->y; wp->rw=wp->w; wp->rh=wp->h; wp->x=0; wp->y=24; wp->w=W; wp->h=H-52; wp->maximized=1; }
+                            else { wp->x=wp->rx; wp->y=wp->ry; wp->w=wp->rw; wp->h=wp->rh; wp->maximized=0; }
+                            frame_apply_idx(wi); break; }
+                        if (!wp->maximized && bx>=wp->w-16 && by>=(wp->shaded?TB:wp->h)-16){ drag_win=wi; drag_mode=2; drag_dx=ev.xbutton.x_root-wp->w; drag_dy=ev.xbutton.y_root-(wp->shaded?TB:wp->h); break; }
+                        if (by<TB && !wp->maximized){ double nw=now_sec();
+                            if (last_title_win==wi && nw-last_title_click<0.4){ /* двойной клик: шторка Haiku/Mac */
+                                wp->shaded=!wp->shaded;
+                                if (wp->shaded && wp->client!=None) XUnmapWindow(dpy,wp->client);
+                                if (!wp->shaded && wp->client!=None) XMapWindow(dpy,wp->client);
+                                frame_apply_idx(wi); last_title_win=-1; break; }
+                            last_title_win=wi; last_title_click=nw;
+                            drag_win=wi; drag_mode=1; drag_dx=ev.xbutton.x_root-wp->x; drag_dy=ev.xbutton.y_root-wp->y; }
                         break; }
-                    hit_click(ev.xbutton.x, ev.xbutton.y); break;
-                case ButtonRelease: drag_on=0; break;
+                    if (ev.xbutton.window==shell_win && mode==MODE_DESKTOP){ /* иконки: перетаскивание отложено до Release/Motion */
+                        Hit *h=NULL; for(int i=nhits-1;i>=0;i--) if(ev.xbutton.x>=hits[i].x&&ev.xbutton.x<hits[i].x+hits[i].w&&ev.xbutton.y>=hits[i].y&&ev.xbutton.y<hits[i].y+hits[i].h){ h=&hits[i]; break; }
+                        if (h && h->action==ACT_ITEM){ icon_drag=h->arg; icon_dx=ev.xbutton.x-icon_pos[h->arg][0]; icon_dy=ev.xbutton.y-icon_pos[h->arg][1]; icon_moved=0; break; }
+                    }
+                    hit_click(ev.xbutton.x,ev.xbutton.y); break; }
+                case ButtonRelease:
+                    if (drag_win>=0){ drag_win=-1; break; }
+                    if (icon_drag>=0){ if (!icon_moved) icon_click(icon_drag); icon_drag=-1; break; }
+                    break;
                 case MotionNotify:
-                    if (drag_on && ev.xmotion.window==frame_win){ fx=ev.xmotion.x_root-drag_dx; fy=ev.xmotion.y_root-drag_dy; if(fy<24)fy=24; frame_apply(); }
+                    if (drag_win>=0 && drag_win<nwins){ Win *wp=&wins[drag_win];
+                        if (drag_mode==1){ wp->x=ev.xmotion.x_root-drag_dx; wp->y=ev.xmotion.y_root-drag_dy; if(wp->y<24)wp->y=24; }
+                        else { wp->w=ev.xmotion.x_root-drag_dx; wp->h=ev.xmotion.y_root-drag_dy; if(wp->w<240)wp->w=240; if(wp->h<160)wp->h=160; }
+                        frame_apply_idx(drag_win); }
+                    else if (icon_drag>=0){ int nx=ev.xmotion.x-icon_dx, ny=ev.xmotion.y-icon_dy;
+                        if (abs(nx-icon_pos[icon_drag][0])+abs(ny-icon_pos[icon_drag][1])>4) icon_moved=1;
+                        if (icon_moved){ if(nx<0)nx=0; if(ny<28)ny=28; if(nx>W-60)nx=W-60; if(ny>H-70)ny=H-70; icon_pos[icon_drag][0]=nx; icon_pos[icon_drag][1]=ny; } }
+                    else if (menu_open && ev.xmotion.window==shell_win && ev.xmotion.y<24){ int x=ev.xmotion.x;
+                        int id=(x<112)?1:(x<180)?2:(x<302)?3:4; if (x<366) menu_open=id; }
                     break;
                 case KeyPress: { KeySym ks0=XLookupKeysym(&ev.xkey,0);
                     int exit_key = ks0==XK_Home || ks0==XK_Super_L || ks0==XK_F9 ||
                                    ((ev.xkey.state&ControlMask) && ks0==XK_Escape);
-                    if (exit_key && (client_win!=None || child_pid>0)){ close_client(); break; }
+                    if (exit_key && (nwins>0 || child_pid>0)){ close_client(); break; }
                     if (exit_key && mode==MODE_APP){ do_back(); break; }
                     key_press(&ev); break; }
                 case MapRequest: { Window w=ev.xmaprequest.window;
-                    if (w==frame_win){ XMapWindow(dpy,w); break; }
+                    if (win_by_frame(w)>=0){ XMapWindow(dpy,w); break; }
                     if (w!=shell_win){
-                        client_win=w;
-                        fw=W*72/100; fh=H*72/100; fx=(W-fw)/2; fy=40; client_max=0;
+                        if (nwins>=MAXWIN){ XMapWindow(dpy,w); break; }
+                        int wi=nwins++; Win *wp=&wins[wi];
+                        wp->client=w; wp->w=W*72/100; wp->h=H*72/100;
+                        wp->x=(W-wp->w)/2 + (wi%3)*36; wp->y=40+(wi%3)*30;
+                        wp->maximized=0; wp->shaded=0; wp->hidden=0;
                         XSetWindowAttributes fa; fa.override_redirect=True; fa.background_pixel=px(0xdddddd);
-                        frame_win=XCreateWindow(dpy,root_win,fx,fy,fw,fh,1,CopyFromParent,InputOutput,CopyFromParent,CWOverrideRedirect|CWBackPixel,&fa);
-                        XStoreName(dpy,frame_win,"XrossWindow");
-                        XSelectInput(dpy,frame_win,ExposureMask|ButtonPressMask|ButtonReleaseMask|PointerMotionMask);
-                        if (arrow_cursor) XDefineCursor(dpy,frame_win,arrow_cursor);
+                        wp->frame=XCreateWindow(dpy,root_win,wp->x,wp->y,wp->w,wp->h,1,CopyFromParent,InputOutput,CopyFromParent,CWOverrideRedirect|CWBackPixel,&fa);
+                        XStoreName(dpy,wp->frame,"XrossWindow");
+                        XSelectInput(dpy,wp->frame,ExposureMask|ButtonPressMask|ButtonReleaseMask|PointerMotionMask);
+                        if (arrow_cursor) XDefineCursor(dpy,wp->frame,arrow_cursor);
                         XSelectInput(dpy,w,StructureNotifyMask);
                         XSetWindowBorderWidth(dpy,w,0);
-                        XReparentWindow(dpy,w,frame_win,1,TB);
-                        frame_apply();
-                        XMapWindow(dpy,frame_win); XMapWindow(dpy,w);
-                        XRaiseWindow(dpy,frame_win);
-                        XSetInputFocus(dpy,w,RevertToParent,CurrentTime);
+                        XReparentWindow(dpy,w,wp->frame,1,TB);
+                        XMapWindow(dpy,wp->frame); XMapWindow(dpy,w);
+                        frame_apply_idx(wi); win_activate(wi);
                     }
                     else XMapWindow(dpy,w);
                     break; }
-                case ConfigureRequest: { XWindowChanges wc; wc.border_width=0;
-                    if (ev.xconfigurerequest.window==client_win && frame_win){
-                        fw=ev.xconfigurerequest.width+2; fh=ev.xconfigurerequest.height+TB+2;
-                        if (fw<240) fw=240; if (fh<160) fh=160; frame_apply();
-                    } else {
-                        wc.x=ev.xconfigurerequest.x; wc.y=ev.xconfigurerequest.y;
-                        wc.width=ev.xconfigurerequest.width; wc.height=ev.xconfigurerequest.height;
-                        XConfigureWindow(dpy,ev.xconfigurerequest.window,CWX|CWY|CWWidth|CWHeight|CWBorderWidth,&wc);
-                    } break; }
-                case DestroyNotify:
-                    if (ev.xdestroywindow.window==client_win){
-                        client_win=None; child_pid=-1;
-                        if (frame_win){ XDestroyWindow(dpy,frame_win); frame_win=None; }
-                        client_max=0; drag_on=0; XMapRaised(dpy,shell_win); XSetInputFocus(dpy,shell_win,RevertToParent,CurrentTime);
+                case ConfigureRequest: { int wi=win_by_client(ev.xconfigurerequest.window);
+                    if (wi>=0){ Win *wp=&wins[wi];
+                        if (!wp->maximized && !wp->shaded){ wp->w=ev.xconfigurerequest.width+2; wp->h=ev.xconfigurerequest.height+TB+2;
+                            if (wp->w<240) wp->w=240; if (wp->h<160) wp->h=160; frame_apply_idx(wi); }
+                    } else { XWindowChanges wc; wc.x=ev.xconfigurerequest.x; wc.y=ev.xconfigurerequest.y;
+                        wc.width=ev.xconfigurerequest.width; wc.height=ev.xconfigurerequest.height; wc.border_width=0;
+                        XConfigureWindow(dpy,ev.xconfigurerequest.window,CWX|CWY|CWWidth|CWHeight|CWBorderWidth,&wc); }
+                    break; }
+                case DestroyNotify: { int wi=win_by_client(ev.xdestroywindow.window);
+                    if (wi>=0){ Window f=wins[wi].frame; wins[wi].frame=None; win_remove(wi);
+                        (void)f; child_pid=-1;
+                        XMapRaised(dpy,shell_win); XSetInputFocus(dpy,shell_win,RevertToParent,CurrentTime);
                         if(mode==MODE_APP) mode=MODE_DESKTOP; }
-                    break;
+                    break; }
                 default: break;
             }
         }
         /* внешний процесс умер, а окна не создал (нет бинарника) — вернуть оболочку */
-        if (child_pid>0 && client_win==None){ if (kill(child_pid,0)<0 && errno==ESRCH){ child_pid=-1; XMapRaised(dpy,shell_win); toast_set("Приложение закрылось или не запустилось (см. /var/log/xross.log)"); } }
+        if (child_pid>0 && nwins==0){ if (kill(child_pid,0)<0 && errno==ESRCH){ child_pid=-1; XMapRaised(dpy,shell_win); toast_set("Приложение закрылось или не запустилось (см. /var/log/xross.log)"); } }
         voice_poll();
         double k = cfg_anim? 0.22 : 1.0;
         anim_item += (item_idx-anim_item)*k; if (fabs(item_idx-anim_item)<0.001) anim_item=item_idx; (void)anim_item;
