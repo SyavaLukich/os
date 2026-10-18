@@ -42,10 +42,10 @@ done
 printf 'quit\n' | socat - UNIX-CONNECT:/tmp/xross-mon >/dev/null 2>&1 || true
 cp /tmp/xross-serial.log boottest-serial.log 2>/dev/null || : > boottest-serial.log
 
-# Диагностика: СНАЧАЛА serial (лимит аннотаций GitHub не должен его вытеснить)
+# Диагностика: ошибки X/сессии из serial (уникальные), затем хвост лога
 ann SERIAL "serial log bytes: $(wc -c < boottest-serial.log)"
-tail -n 30 boottest-serial.log | while IFS= read -r line; do [ -n "$line" ] && ann SERIAL "$line"; done
-head -n 12 boottest-ocr.txt | while IFS= read -r line; do [ -n "$line" ] && ann OCR "$line"; done
+grep -aE "\(EE\)|Fatal|Server terminated|unable to|failed|Failed|no screens|Cannot|error" boottest-serial.log 2>/dev/null | sort | uniq -c | sort -rn | head -n 18 | while IFS= read -r line; do ann XERR "$line"; done
+tail -n 15 boottest-serial.log | while IFS= read -r line; do [ -n "$line" ] && ann SERIAL "$line"; done
 
 [ -n "$found" ] && exit 0
 echo "::error title=BOOTTEST::XrossOS не появился на экране за 600 с"
