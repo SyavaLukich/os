@@ -59,13 +59,37 @@ chmod 1777 /newroot/tmp 2>/dev/null || true
 mkdir -p /newroot/media/iso
 mount --bind /media/iso /newroot/media/iso 2>/dev/null || true
 
-# Stage2-обёртка: маркеры в консоль, чтобы видеть переход через switch_root
+# Stage2: собственный минимальный PID1 для Live-киоска.
+# OpenRC-init после switch_root в этой конфигурации молча зависал, поэтому
+# Live грузится без него: udev -> графика -> X-сессия напрямую (лог + рестарт).
+# (В установленной системе OpenRC-сервис xross остаётся, см. overlay/etc/init.d.)
 cat > /newroot/xross-stage2.sh <<'EOS'
 #!/bin/sh
-echo "XROSS stage2: PID1 up, starting OpenRC..."
-exec /sbin/init
-echo "XROSS stage2: /sbin/init exited ($?), emergency shell"
-exec sh </dev/console >/dev/console 2>&1
+echo "XROSS stage2: PID1 up"
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+mount -t devtmpfs devtmpfs /dev 2>/dev/null
+mkdir -p /dev/pts /dev/shm /run /tmp
+mount -t devpts devpts /dev/pts 2>/dev/null
+mount -t tmpfs tmpfs /run 2>/dev/null
+echo xrossos > /proc/sys/kernel/hostname 2>/dev/null
+if [ -x /sbin/udevd ]; then
+    /sbin/udevd --daemon 2>/dev/null
+    udevadm trigger --type=subsystems --action=add 2>/dev/null
+    udevadm trigger --type=devices --action=add 2>/dev/null
+    udevadm settle --timeout=15 2>/dev/null
+fi
+for m in amdgpu vmwgfx vboxvideo bochs drm_kms_helper i915; do modprobe "$m" 2>/dev/null; done
+ip link set lo up 2>/dev/null
+for n in eth0 enp0s3 end0; do ip link set "$n" up 2>/dev/null && udhcpc -i "$n" -q -n -t 3 2>/dev/null & done
+mkdir -p /tmp/xdg && chmod 700 /tmp/xdg
+echo "XROSS stage2: starting X session (log: /var/log/xross.log)"
+while true; do
+    su - guest -c /usr/bin/xross-session >>/var/log/xross.log 2>&1
+    echo "XROSS stage2: X session exited rc=$?, last log lines:"
+    tail -n 40 /var/log/xross.log 2>/dev/null
+    echo "XROSS stage2: restart in 5s"
+    sleep 5
+done
 EOS
 chmod +x /newroot/xross-stage2.sh
 echo "XrossOS Live: starting system..."
