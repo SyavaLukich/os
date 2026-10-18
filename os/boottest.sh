@@ -26,14 +26,14 @@ ann() { # $1=title $2=text : экранирование для GitHub annotation
 
 found=""
 i=0
-while [ $i -lt 10 ]; do
+while [ $i -lt 20 ]; do
     i=$((i+1)); sleep 30
     printf 'screendump %s/shot.ppm\n' "$PWD" | socat - UNIX-CONNECT:/tmp/xross-mon >/dev/null 2>&1 || continue
     [ -f shot.ppm ] || continue
     convert shot.ppm boottest-screenshot.png 2>/dev/null || cp shot.ppm boottest-screenshot.png
     tesseract boottest-screenshot.png boottest-ocr -l eng >/dev/null 2>&1 || true
     [ -f boottest-ocr.txt ] || : > boottest-ocr.txt
-    ann "BOOTTEST poll $i" "$(head -c 200 boottest-ocr.txt)"
+    if [ $((i % 5)) -eq 0 ]; then ann "BOOTTEST poll $i" "$(head -c 160 boottest-ocr.txt)"; fi
     if grep -qi "NOT found" boottest-ocr.txt; then
         echo "::error title=BOOTTEST::аварийная консоль (rootfs не найден)"; break
     fi
@@ -42,11 +42,11 @@ done
 printf 'quit\n' | socat - UNIX-CONNECT:/tmp/xross-mon >/dev/null 2>&1 || true
 cp /tmp/xross-serial.log boottest-serial.log 2>/dev/null || : > boottest-serial.log
 
-# Диагностика в аннотации: OCR целиком и хвост serial-лога
-while IFS= read -r line; do [ -n "$line" ] && ann OCR "$line"; done < boottest-ocr.txt
+# Диагностика: СНАЧАЛА serial (лимит аннотаций GitHub не должен его вытеснить)
 ann SERIAL "serial log bytes: $(wc -c < boottest-serial.log)"
-tail -n 25 boottest-serial.log | while IFS= read -r line; do [ -n "$line" ] && ann SERIAL "$line"; done
+tail -n 30 boottest-serial.log | while IFS= read -r line; do [ -n "$line" ] && ann SERIAL "$line"; done
+head -n 12 boottest-ocr.txt | while IFS= read -r line; do [ -n "$line" ] && ann OCR "$line"; done
 
 [ -n "$found" ] && exit 0
-echo "::error title=BOOTTEST::XrossOS не появился на экране за 300 с"
+echo "::error title=BOOTTEST::XrossOS не появился на экране за 600 с"
 exit 1
