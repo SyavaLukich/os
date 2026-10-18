@@ -84,7 +84,7 @@ static const AppDef APPS[] = {
     {"settings","О системе","XrossOS " XROSS_VERSION " · ASUS X550EA","i",0x4cc9f0,0,NULL},
     {"photo","Фотографии","Галерея","P",0x38d39f,0,NULL},
     {"music","Музыка","Треки и эквалайзер","M",0xff7ac6,0,NULL},
-    {"video","Видео (mpv)","Внешний плеер — на весь экран","▶",0xff8a5c,1,"mpv --fs ~/Видео"},
+    {"video","Видео (mpv)","Внешний плеер — на весь экран","▶",0xff8a5c,1,"mpv --idle --fs"},
     {"game","Пузыри","Мини-игра в стиле PS Vita / Dreamcast","B",0x4cc9f0,0,NULL},
     {"game","Змейка","Классика","S",0x38d39f,0,NULL},
     {"game","Ретро-игры (RetroArch)","Внешнее приложение","R",0xb089ff,1,"retroarch -f"},
@@ -185,16 +185,32 @@ static void notes_load(void){ char p[512]; path_home(p,sizeof p,NOTES_PATH); FIL
 static void notes_save(void){ char p[512]; path_home(p,sizeof p,NOTES_PATH); FILE *f=fopen(p,"w"); if(f){ fputs(notes_buf,f); fclose(f);} }
 
 /* ───────────────────────── запуск внешних приложений ───────────────────────── */
-static void launch_external(const char *cmdline){
+/* есть ли бинарь в PATH (первое слово команды) */
+static int have_binary(const char *cmdline){
+    char prog[128]; size_t k=0; while (cmdline[k] && cmdline[k]!=' ' && k<sizeof prog-1){ prog[k]=cmdline[k]; k++; } prog[k]=0;
+    if (strchr(prog,'/')) return access(prog,X_OK)==0;
+    const char *path=getenv("PATH"); if(!path) path="/usr/bin:/bin:/usr/local/bin";
+    char dup[512]; snprintf(dup,sizeof dup,"%s",path); char *save=NULL;
+    for (char *d=strtok_r(dup,":",&save); d; d=strtok_r(NULL,":",&save)){
+        char full[640]; snprintf(full,sizeof full,"%s/%s",d,prog);
+        if (access(full,X_OK)==0) return 1;
+    }
+    return 0;
+}
+static void launch_external(const char *cmdline, const char *title){
+    if (!have_binary(cmdline)){
+        char b[256]; snprintf(b,sizeof b,"%s не установлено в Live-образе",title); toast_set(b);
+        fprintf(stderr,"xross: not installed: %s (%s)\n",title,cmdline);
+        return;
+    }
     toast_set("Запуск на весь экран…");
     pid_t pid=fork();
-    if (pid==0){ setsid(); char buf[512]; snprintf(buf,sizeof buf,"%s",cmdline);
-        /* простая разбивка по пробелам: команды в реестре без кавычек, кроме -fa/-fs аргументов xterm без пробелов внутри */
-        char *argv[32]; int n=0; char *save=NULL; for(char *t=strtok_r(buf," ",&save); t&&n<31; t=strtok_r(NULL," ",&save)) argv[n++]=t; argv[n]=NULL;
-        execvp(argv[0],argv); _exit(127); }
+    if (pid==0){ setsid();
+        /* через sh -c: раскрываются ~, переменные и кавычки в командах реестра */
+        execl("/bin/sh","sh","-c",cmdline,(char*)NULL); _exit(127); }
     child_pid=pid;
     XUnmapWindow(dpy,shell_win); XFlush(dpy);
-    /* если процесс сразу умер (нет бинарника) — событие wait в главном цикле вернёт оболочку */
+    /* смерть ребёнка ловит главный цикл по kill(pid,0): при SIG_IGN waitpid не работает */
 }
 static void close_client(void){
     if (client_win!=None){ XKillClient(dpy,client_win); client_win=None; }
@@ -204,7 +220,7 @@ static void close_client(void){
 
 static void open_app_idx(int ai){
     if (ai<0) return;
-    if (APPS[ai].ext){ launch_external(APPS[ai].cmd); return; }
+    if (APPS[ai].ext){ launch_external(APPS[ai].cmd, APPS[ai].title); return; }
     open_app=ai; mode=MODE_APP;
     if (!strcmp(APPS[ai].title,"Пузыри")){ bubble_score=0; for(int i=0;i<10;i++){ bubbles[i].alive=1; bubbles[i].x=80+rand()%(W>240?W-240:200); bubbles[i].y=140+rand()%(H>300?H-300:200); bubbles[i].r=26+rand()%30; bubbles[i].born=now_sec(); bubbles[i].g="*"; } }
     if (!strcmp(APPS[ai].title,"Змейка")){ snake_len=3; snake_pts=0; snake_dir[0]=1; snake_dir[1]=0; snake_xy[0][0]=8; snake_xy[0][1]=8; snake_food[0]=15; snake_food[1]=10; snake_last=now_sec(); }
@@ -576,7 +592,7 @@ int main(int argc,char **argv){
             }
         }
         /* внешний процесс умер, а окна не создал (нет бинарника) — вернуть оболочку */
-        if (child_pid>0 && client_win==None){ int st; if (waitpid(child_pid,&st,WNOHANG)>0){ child_pid=-1; XMapRaised(dpy,shell_win); toast_set("Приложение не запустилось (нет в образе ОС?)"); } }
+        if (child_pid>0 && client_win==None){ if (kill(child_pid,0)<0 && errno==ESRCH){ child_pid=-1; XMapRaised(dpy,shell_win); toast_set("Приложение закрылось или не запустилось (см. /var/log/xross.log)"); } }
         voice_poll();
 #ifdef __linux__
         joy_poll();

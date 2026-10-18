@@ -11,7 +11,7 @@ RUN apk add --no-cache \
     alpine-base linux-lts linux-firmware-amdgpu eudev openrc \
     xorg-server xf86-video-amdgpu xf86-video-vesa xf86-video-fbdev xf86-video-vmware xf86-input-libinput xf86-input-evdev mesa-dri-gallium mesa-egl \
     virtualbox-guest-additions-x11 virtualbox-guest-additions-openrc \
-    xinit xterm font-dejavu libx11 alsa-utils squashfs-tools \
+    xinit xterm font-dejavu libx11 alsa-utils squashfs-tools firefox-esr mpv \
     networkmanager linux-firmware-mediatek \
     && adduser -D -h /home/player -s /bin/sh player \
     && addgroup player video; addgroup player input; addgroup player audio; addgroup player netdev; addgroup player tty \
@@ -42,4 +42,5 @@ RUN chmod +x /usr/bin/xross-session /usr/bin/xross-launch /etc/init.d/xross \
         > /etc/mkinitfs/features.d/xross.modules \
     && KVER=$(ls /lib/modules | head -n1) \
     && mkinitfs -F "base cdrom squashfs xross" -o /boot/initramfs-xross "$KVER" \
-    && echo "xross: kernel $KVER, initramfs готов"
+    && echo "xross: kernel $KVER, initramfs готов" \
+    && firefox-esr --version && mpv --version | head -n1 && xterm -version

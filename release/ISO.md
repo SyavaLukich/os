@@ -31,8 +31,8 @@ dd if=xrossos-0.2-x550ea.iso of=/dev/sdX bs=4M status=progress  # осторож
 ## Что внутри ISO
 Alpine 3.20 rootfs: linux-lts, прошивки amdgpu для Radeon HD 8330, Xorg +
 xf86-video-amdgpu + Mesa radeonsi, libinput, networkmanager, xterm,
-оболочка из `src/` (собрана с `-march=btver2`). Firefox/mpv/RetroArch в Live
-не вшиты (ставятся `apk add` после загрузки) — ради размера образа.
+оболочка из `src/` (собрана с `-march=btver2`). Firefox ESR и mpv вшиты в Live и запускаются из меню. RetroArch/Kodi в Live
+не вшиты — оболочка честно напишет «не установлено» вместо чёрного экрана.
 
 ## Пересобрать самому
 GitHub Actions соберёт ISO при изменениях `src/`, `os/Dockerfile.live`,
