@@ -24,7 +24,7 @@ COPY os/overlay/ /
 RUN chmod +x /usr/bin/xross-session /usr/bin/xross-launch /etc/init.d/xross \
     && rc-update add xross default \
     && rm -rf /usr/share/doc /usr/share/man /usr/share/gtk-doc /var/cache/apk/* \
-    && mkdir -p /usr/share/mkinitfs/features.d \
+    && mkdir -p /etc/mkinitfs/features.d \
     && printf '%s\n' \
         'kernel/drivers/ata/ahci.ko*' 'kernel/drivers/ata/libahci.ko*' \
         'kernel/drivers/ata/libata*.ko*' \
@@ -39,7 +39,7 @@ RUN chmod +x /usr/bin/xross-session /usr/bin/xross-launch /etc/init.d/xross \
         'kernel/drivers/usb/storage/usb-storage.ko*' 'kernel/drivers/usb/storage/uas.ko*' \
         'kernel/drivers/usb/host/xhci-pci.ko*' 'kernel/drivers/usb/host/ehci-pci.ko*' \
         'kernel/drivers/usb/host/ohci-pci.ko*' 'kernel/drivers/usb/host/uhci-hcd.ko*' \
-        > /usr/share/mkinitfs/features.d/xross.modules \
+        > /etc/mkinitfs/features.d/xross.modules \
     && KVER=$(ls /lib/modules | head -n1) \
     && mkinitfs -F "base cdrom squashfs xross" -o /boot/initramfs-xross "$KVER" \
     && echo "xross: kernel $KVER, initramfs готов"
