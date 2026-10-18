@@ -95,7 +95,7 @@ jobs:
       - name: Install QEMU and OCR
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq qemu-system-x86 socat imagemagick tesseract-ocr
+          sudo apt-get install -y -qq qemu-system-x86 socat imagemagick tesseract-ocr xorriso
       - name: Boot ISO in QEMU and screenshot
         run: sh os/boottest.sh dist/xrossos-0.2-x550ea.iso
       - name: Upload screenshot (always)
