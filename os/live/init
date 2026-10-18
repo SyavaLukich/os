@@ -24,7 +24,7 @@ sleep 1
 
 mkdir -p /media/iso /mnt/squash /mnt/rw /newroot
 found=""
-for i in 1 2 3 4 5; do
+for i in 1 2 3 4 5 6 7 8 9 10; do
     for dev in /dev/sr0 /dev/sr1 /dev/cdrom /dev/sd[a-z] /dev/vd[a-z]; do
         [ -b "$dev" ] || continue
         if mount -t iso9660 -o ro "$dev" /media/iso 2>/dev/null; then

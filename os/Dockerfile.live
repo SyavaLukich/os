@@ -24,5 +24,5 @@ COPY os/overlay/ /
 RUN chmod +x /usr/bin/xross-session /usr/bin/xross-launch /etc/init.d/xross \
     && rc-update add xross default \
     && KVER=$(ls /lib/modules | head -n1) \
-    && mkinitfs -F "base ata cdrom usb squashfs ext2 virtio" -o /boot/initramfs-xross "$KVER" \
+    && mkinitfs -F "base ata cdrom scsi usb squashfs ext2 virtio nvme mmc kms" -o /boot/initramfs-xross "$KVER" \
     && echo "xross: kernel $KVER, initramfs готов"
