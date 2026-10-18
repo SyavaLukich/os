@@ -1,9 +1,13 @@
 # XrossOS — сборка нативной оболочки (C/Xlib, без JS)
-# По умолчанию тюнинг под ASUS X550EA: AMD Jaguar (btver2), -O2, LTO.
-# На другой машине: make TARGET_CPU=generic
+# Тюнинг под ASUS X550EA: планировщик Jaguar (mtune=btver2), но ISA -
+# x86-64-v2 БЕЗ AVX: -march=btver2 давал AVX-векторизацию, и оболочка
+# падала с invalid opcode на CPU без AVX (QEMU qemu64, старые хосты VM)
+# именно при открытии приложений. Для Xlib-оболочки AVX ничего не даёт.
+# На другой машине: make MTUNE=generic
 CC      ?= cc
-TARGET_CPU ?= btver2
-CFLAGS  ?= -O2 -march=$(TARGET_CPU) -mtune=$(TARGET_CPU) -flto -ffunction-sections -fdata-sections \
+MARCH   ?= x86-64-v2
+MTUNE   ?= btver2
+CFLAGS  ?= -O2 -march=$(MARCH) -mtune=$(MTUNE) -flto -ffunction-sections -fdata-sections \
            -std=c99 -Wall -Wextra -Wno-unused-parameter -D_POSIX_C_SOURCE=200809L
 LDFLAGS ?= -flto -Wl,--gc-sections -s
 LDLIBS   = -lX11 -lm
