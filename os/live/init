@@ -59,5 +59,14 @@ chmod 1777 /newroot/tmp 2>/dev/null || true
 mkdir -p /newroot/media/iso
 mount --bind /media/iso /newroot/media/iso 2>/dev/null || true
 
+# Stage2-обёртка: маркеры в консоль, чтобы видеть переход через switch_root
+cat > /newroot/xross-stage2.sh <<'EOS'
+#!/bin/sh
+echo "XROSS stage2: PID1 up, starting OpenRC..."
+exec /sbin/init
+echo "XROSS stage2: /sbin/init exited ($?), emergency shell"
+exec sh </dev/console >/dev/console 2>&1
+EOS
+chmod +x /newroot/xross-stage2.sh
 echo "XrossOS Live: starting system..."
-exec switch_root /newroot /sbin/init
+exec switch_root /newroot /xross-stage2.sh
