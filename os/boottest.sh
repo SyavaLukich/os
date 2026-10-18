@@ -62,6 +62,18 @@ if [ -n "$found" ] && [ "${BOOTTEST_APPS:-0}" = "1" ]; then
         fi
     done
     [ -n "$appfound" ] || echo "::error title=APPTEST::Firefox window not recognized (boottest-firefox.png artifact)"
+    # Фаза 3: выход из приложения кнопкой Home -> снова домашний экран Vita
+    ann EXITTEST "exit Firefox: sendkey home"
+    printf 'sendkey home\n' | socat - UNIX-CONNECT:/tmp/xross-mon >/dev/null 2>&1 || true
+    back=""; bi=0
+    while [ $bi -lt 12 ]; do
+        bi=$((bi+1)); sleep 5
+        printf 'screendump %s/shot.ppm\n' "$PWD" | socat - UNIX-CONNECT:/tmp/xross-mon >/dev/null 2>&1 || continue
+        convert shot.ppm boottest-home.png 2>/dev/null || cp shot.ppm boottest-home.png
+        tesseract boottest-home.png boottest-home-ocr -l eng >/dev/null 2>&1 || true
+        if grep -qiE "XrossOS|Dreamcast" boottest-home-ocr.txt 2>/dev/null; then back=1; ann EXITTEST "OK - back on home screen after Home"; break; fi
+    done
+    [ -n "$back" ] || echo "::error title=EXITTEST::home screen not recognized after Home (boottest-home.png artifact)"
 fi
 printf 'quit\n' | socat - UNIX-CONNECT:/tmp/xross-mon >/dev/null 2>&1 || true
 cp /tmp/xross-serial.log boottest-serial.log 2>/dev/null || : > boottest-serial.log
