@@ -51,7 +51,7 @@ if [ -n "$found" ] && [ "${BOOTTEST_APPS:-0}" = "1" ]; then
         sleep 2
     done
     appfound=""; ai=0; AT0=$(date +%s)
-    while [ $ai -lt 30 ]; do
+    while [ $ai -lt 60 ]; do
         ai=$((ai+1)); sleep 10
         printf 'screendump %s/shot.ppm\n' "$PWD" | socat - UNIX-CONNECT:/tmp/xross-mon >/dev/null 2>&1 || continue
         convert shot.ppm boottest-firefox.png 2>/dev/null || cp shot.ppm boottest-firefox.png

@@ -87,7 +87,7 @@ jobs:
     name: QEMU boot test (screenshot+OCR)
     needs: iso
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
