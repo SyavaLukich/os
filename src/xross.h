@@ -6,7 +6,7 @@
 #define XROSS_H
 
 #define XROSS_VERSION "0.2"
-#define XROSS_CODENAME "Swirl"   /* Dreamcast-референс */
+#define XROSS_CODENAME "Platinum" /* классический оконный стиль */
 
 /* Родное разрешение панели X550EA; на другом железе размер берётся
  * из фактического размера root-окна X-сервера. */

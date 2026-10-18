@@ -42,11 +42,12 @@ while [ $i -lt 120 ]; do
     fi
     if grep -qiE "XrossOS|Dreamcast|Ctrl\+Esc|Home" boottest-ocr.txt; then found=1; ann BOOTTEST "OK - XrossOS GUI за ~$(( $(date +%s) - T0 )) c (poll $i)"; break; fi
 done
-# Фаза 2 (BOOTTEST_APPS=1): запуск Firefox из XMB клавишами, как пользователь.
-# Экран загрузки: Enter -> главный экран Vita; Down,Down,Right -> пузырь Firefox; Enter.
+# Фаза 2 (BOOTTEST_APPS=1): запуск Firefox с рабочего стола клавишами, как пользователь.
+# Приветствие само закроется за 2.2 с: Esc (без вреда) + пауза, затем
+# Down x3 по двухколоночным иконкам рабочего стола -> Firefox (индекс 6), Enter.
 if [ -n "$found" ] && [ "${BOOTTEST_APPS:-0}" = "1" ]; then
-    ann APPTEST "launch Firefox: Enter, Down x2, Right, Enter (Vita grid)"
-    for k in ret down down right ret; do
+    ann APPTEST "launch Firefox: Esc, wait, Down x3, Enter (desktop icons)"
+    for k in esc down down down ret; do
         printf 'sendkey %s\n' "$k" | socat - UNIX-CONNECT:/tmp/xross-mon >/dev/null 2>&1 || true
         sleep 2
     done

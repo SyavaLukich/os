@@ -1,13 +1,14 @@
-/* XrossOS shell — C/Xlib. Референсы: PS3/PSP (XMB), PS Vita (сферы),
- * Dreamcast (заставка со «свёрлом», орбитальное меню из 4 сфер).
+/* XrossOS shell — C/Xlib. Классический оконный интерфейс в духе
+ * Mac OS 7–9 (Platinum) и Haiku: строка меню сверху, рабочий стол с
+ * иконками, окна с полосатой полосой заголовка, кнопками закрытия и
+ * изменения размера, серые скошенные панели.
  *
  * xross одновременно:
- *  1) полноэкранная оболочка (override-redirect окно на весь экран);
- *  2) минимальный WM: SubstructureRedirect на root — КАЖДОЕ чужое окно
- *     принудительно разворачивается на весь экран без рамок. Это X11-
- *     аналог поведения Cage в прошлой (Wayland/JS) версии;
- *  3) клиент голосового демона xross-voiced (команды из FIFO);
- *  4) читатель геймпада /dev/input/js0 (Linux joystick API).
+ *  1) рабочий стол (override-redirect окно на весь экран);
+ *  2) минимальный оконный менеджер: SubstructureRedirect на root —
+ *     каждое внешнее приложение получает рамку окна (заголовок,
+ *     закрытие, разворачивание, перетаскивание), а не весь экран;
+ *  3) клиент голосового демона xross-voiced (команды из FIFO).
  *
  * Рендер: программный, двойная буферизация Pixmap, только ядро X11
  * (без XRender/композитора — важно для Radeon HD 8330 + Jaguar). */
@@ -35,29 +36,25 @@
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
-#ifdef __linux__
-#include <linux/joystick.h>
-#endif
 #include "xross.h"
 
 /* ───────────────────────── типы и состояние ───────────────────────── */
 typedef struct { int x, y, w, h, action, arg; } Hit;
 typedef struct { const char *cat, *title, *sub, *glyph; unsigned rgb; int ext; const char *cmd; } AppDef;
 
-enum { MODE_BOOT, MODE_XMB, MODE_DC, MODE_APP };
+enum { MODE_BOOT, MODE_DESKTOP, MODE_APP };
 enum { APP_NONE = -1 };
 /* action-коды хитбоксов */
-enum { ACT_CAT, ACT_ITEM, ACT_SETTING, ACT_TILE, ACT_TRACK, ACT_STORE, ACT_DC_ORBIT, ACT_CLOSE };
+enum { ACT_ITEM, ACT_SETTING, ACT_TRACK, ACT_STORE, ACT_CLOSEWIN, ACT_MENU, ACT_MENUITEM };
 
-static Display *dpy; static Window root_win, shell_win, exit_win; static Pixmap backbuf;
-static int exit_visible;
+static Display *dpy; static Window root_win, shell_win; static Pixmap backbuf;
 static GC gc; static XFontSet fontset; static XFontStruct *fixedfont;
 static int W, H, screen_no;
 static Colormap cmap;
 
 static int mode = MODE_BOOT;
-static int cat_idx = 3, item_idx = 0;          /* старт: «Музыка» */
-static double anim_cat = 3.0, anim_item = 0.0; /* сглаженные позиции XMB */
+static int item_idx = 0;
+static double anim_item = 0.0; /* сглаживание выбора иконки */
 static double boot_t0;
 static int open_app = APP_NONE;                /* индекс в APPS или -1 */
 static Window client_win = None;               /* чужое полноэкранное окно */
@@ -67,34 +64,23 @@ static Hit hits[128]; static int nhits;
 static long frame_no;
 
 /* настройки (сохраняются в CONFIG_PATH) */
-static int cfg_hue = 222;        /* PS3-волна */
-static int cfg_swirl = 0;        /* 0=синий EU, 1=оранжевый JP, 2=красный US (Dreamcast) */
-static int cfg_anim = 1, cfg_fps_battery_save = 1, cfg_dc_default = 0;
-static unsigned SWIRL_RGB[3] = { 0x2b6cb0, 0xf07d18, 0xd63a2f };
+static int cfg_desk = 0;         /* 0=бирюзовый (Mac), 1=серый, 2=синий (Haiku) */
+static int cfg_anim = 1, cfg_fps_battery_save = 1;
+static const unsigned DESK_RGB[3] = { 0x386e6e, 0x5a6e7a, 0x2c4a72 };
+static const unsigned ACCENT_RGB = 0xffc914; /* жёлтый таб Haiku */
 
-static const char *CATS[][2] = {
-    {"users","Пользователи"},{"settings","Настройки"},{"photo","Фото"},{"music","Музыка"},
-    {"video","Видео"},{"game","Игры"},{"network","Сеть"},{"apps","Приложения"},
-};
-#define NCATS 8
 static const AppDef APPS[] = {
-    {"users","Профиль игрока","Гость · уровень 1","U",0x7c5cff,0,NULL},
-    {"users","Достижения","3 из 42","T",0xf5b301,0,NULL},
-    {"settings","Настройки системы","Тема, свёрл, FPS, анимации","S",0x9aa7b4,0,NULL},
-    {"settings","Голосовое управление","Vosk офлайн · клавиша V","V",0xff5c7a,0,NULL},
-    {"settings","О системе","XrossOS " XROSS_VERSION " · ASUS X550EA","i",0x4cc9f0,0,NULL},
-    {"photo","Фотографии","Галерея","P",0x38d39f,0,NULL},
-    {"music","Музыка","Треки и эквалайзер","M",0xff7ac6,0,NULL},
-    {"video","Видео (mpv)","Внешний плеер — на весь экран","▶",0xff8a5c,1,"mpv --idle --fs"},
-    {"game","Пузыри","Мини-игра в стиле PS Vita / Dreamcast","B",0x4cc9f0,0,NULL},
-    {"game","Змейка","Классика","S",0x38d39f,0,NULL},
-    {"game","Ретро-игры (RetroArch)","Внешнее приложение","R",0xb089ff,1,"retroarch -f"},
-    {"network","Браузер Firefox","Внешнее приложение","F",0x4cc9f0,1,"firefox-esr"},
-    {"network","Магазин","Установка пакетов apk","+",0xf5b301,0,NULL},
-    {"apps","Файлы","Домашний каталог","D",0xffd166,0,NULL},
-    {"apps","Терминал (xterm)","Внешнее приложение",">",0xa7f3d0,1,"xterm -fa DejaVuSansMono -fs 13 -bg black -fg white"},
-    {"apps","Заметки","Сохраняются в ~/.xross-notes","N",0xfef08a,0,NULL},
-    {"apps","Kodi","Медиацентр, на весь экран","K",0x61afef,1,"kodi"},
+    {"settings","Настройки системы","Внешний вид, анимации, FPS","S",0x9aa7b4,0,NULL},
+    {"settings","Голосовое управление","Vosk офлайн · клавиша V","V",0xd94f6a,0,NULL},
+    {"settings","О системе","XrossOS " XROSS_VERSION " · ASUS X550EA","i",0x4a6fa5,0,NULL},
+    {"photo","Фотографии","Галерея","P",0x7a9e43,0,NULL},
+    {"music","Музыка","Треки и эквалайзер","M",0xb05a7a,0,NULL},
+    {"video","Видео (mpv)","Внешний плеер в окне","▶",0xc96a2c,1,"mpv --idle"},
+    {"network","Браузер Firefox","Внешнее приложение в окне","F",0xd2691e,1,"firefox-esr"},
+    {"network","Магазин","Установка пакетов apk","+",0xb8860b,0,NULL},
+    {"apps","Файлы","Домашний каталог","D",0xc9a227,0,NULL},
+    {"apps","Терминал (xterm)","Внешнее приложение в окне",">",0x444444,1,"xterm -fa DejaVuSansMono -fs 13 -bg white -fg black"},
+    {"apps","Заметки","Сохраняются в ~/.xross-notes","N",0x8a7a2c,0,NULL},
 };
 #define NAPPS (int)(sizeof APPS / sizeof APPS[0])
 
@@ -133,110 +119,47 @@ static int text_w(const char *s){
 static void text_c(const char *s,int cx,int y,unsigned rgb){ text(s,cx-text_w(s)/2,y,rgb); }
 static void add_hit(int x,int y,int w,int h,int action,int arg){ if(nhits<128) hits[nhits++]=(Hit){x,y,w,h,action,arg}; }
 
-/* сфера-иконка (совместимость: меню Dreamcast) */
-static void sphere(int cx,int cy,int r,unsigned rgb,int focused){
-    fill_circle(cx,cy,r, blend(rgb,0x000000,0.25));
-    fill_circle(cx,cy,r-2, rgb);
-    fill_circle(cx-r/3,cy-r/3,r/3, blend(rgb,0xffffff,0.55));
-    fill_circle(cx-r/4,cy-r/4,r/6, blend(rgb,0xffffff,0.8));
-    if (focused) draw_circle(cx,cy,r+5,0xffffff,2);
+/* ── Platinum (Mac OS 7–9) + Haiku примитивы ───────────────────────────
+ * Скошенная панель: светлая кромка сверху-слева, тёмная снизу-справа. */
+static void bevel(int x,int y,int w,int h,int raised){
+    unsigned hi=raised?0xffffff:0x555555, lo=raised?0x555555:0xffffff, mid=raised?0x999999:0xdddddd;
+    fg(hi);  XDrawLine(dpy,backbuf,gc,x,y,x+w-1,y); XDrawLine(dpy,backbuf,gc,x,y,x,y+h-1);
+    fg(mid); XDrawLine(dpy,backbuf,gc,x+1,y+1,x+w-2,y+1); XDrawLine(dpy,backbuf,gc,x+1,y+1,x+1,y+h-2);
+    fg(lo);  XDrawLine(dpy,backbuf,gc,x,y+h-1,x+w-1,y+h-1); XDrawLine(dpy,backbuf,gc,x+w-1,y,x+w-1,y+h-1);
+    fg(raised?0x777777:0xbbbbbb); XDrawLine(dpy,backbuf,gc,x+1,y+h-2,x+w-2,y+h-2); XDrawLine(dpy,backbuf,gc,x+w-2,y+1,x+w-2,y+h-2);
 }
-
-/* ── Полностью 3D пузырь: попиксельный сферический шейдинг ─────────────
- * Для каждой точки сферы считаем нормаль и освещаем по модели:
- * diffuse (Lambert) + specular (Blinn-Phong) + Fresnel по краю +
- * отражение окружения (светлое «небо» сверху, тёмная «земля» снизу).
- * Результат рендерится ОДИН раз в кэшируемый спрайт (Pixmap + маска-круг)
- * и дальше просто копируется — Jaguar не считает попиксельно каждый кадр. */
-typedef struct { unsigned rgb; int r; Pixmap pix, mask; } BubbleSprite;
-static BubbleSprite bubble_sprites[96]; static int nbubble_sprites;
-
-static unsigned long pixel_rgb(unsigned rgb){
-    Visual *v = DefaultVisual(dpy,screen_no);
-    unsigned long rm=v->red_mask, gm=v->green_mask, bm=v->blue_mask;
-    if (!rm || !gm || !bm) return px(rgb);
-    int rs=0, gs=0, bs=0; while (rm && !(rm&1)) { rm>>=1; rs++; } while (gm && !(gm&1)) { gm>>=1; gs++; } while (bm && !(bm&1)) { bm>>=1; bs++; }
-    unsigned long r8=(rgb>>16)&255, g8=(rgb>>8)&255, b8=rgb&255;
-    return ((r8*rm/255)<<rs) | ((g8*gm/255)<<gs) | ((b8*bm/255)<<bs);
+static void panel(int x,int y,int w,int h){ fill_rect(x,y,w,h,0xdddddd); bevel(x,y,w,h,1); }
+/* Полоса заголовка окна: серые горизонтальные линии, как в Platinum,
+ * с жёлтой вкладкой-вкладкой в духе Haiku слева от заголовка. */
+static void titlebar(int x,int y,int w,const char *title,int active){
+    fill_rect(x,y,w,22, active?0xdddddd:0xbbbbbb);
+    if (active){ fg(0x999999); for(int yy=y+4;yy<y+20;yy+=3) XDrawLine(dpy,backbuf,gc,x+30,y+ (yy-y),x+w-30,yy); }
+    fill_rect(x+4,y+3,10,16,ACCENT_RGB); bevel(x+4,y+3,10,16,1);
+    /* кнопка закрытия (Mac: слева) */
+    fill_rect(x+18,y+5,12,12,0xdddddd); bevel(x+18,y+5,12,12,1);
+    /* кнопка разворачивания (справа) */
+    fill_rect(x+w-18,y+5,12,12,0xdddddd); bevel(x+w-18,y+5,12,12,1);
+    fg(0x000000); { XPoint sq[5]={{x+w-15,y+8},{x+w-9,y+8},{x+w-9,y+14},{x+w-15,y+14},{x+w-15,y+8}}; XDrawLines(dpy,backbuf,gc,sq,5,CoordModeOrigin); }
+    if (title) text_c(title,x+w/2,y+16,0x000000);
+    fg(0x777777); XDrawLine(dpy,backbuf,gc,x,y+22,x+w,y+22);
 }
-static int shade255(double v){ if (v<0) return 0; if (v>255) return 255; return (int)v; }
-
-static BubbleSprite *bubble_sprite(unsigned rgb,int r){
-    for (int i=0;i<nbubble_sprites;i++)
-        if (bubble_sprites[i].rgb==rgb && bubble_sprites[i].r==r) return &bubble_sprites[i];
-    if (nbubble_sprites>=96 || r<4) return NULL;
-    const int pad=8, sz=2*(r+pad), c=sz/2;
-    Pixmap pix=XCreatePixmap(dpy,root_win,sz,sz,DefaultDepth(dpy,screen_no));
-    Pixmap mask=XCreatePixmap(dpy,root_win,sz,sz,1);
-    if (!pix || !mask){ if(pix) XFreePixmap(dpy,pix); if(mask) XFreePixmap(dpy,mask); return NULL; }
-    GC mgc=XCreateGC(dpy,mask,0,NULL);
-    XSetForeground(dpy,mgc,0); XFillRectangle(dpy,mask,mgc,0,0,sz,sz);
-    XSetForeground(dpy,mgc,1); XFillArc(dpy,mask,mgc,pad,pad,r*2,r*2,0,360*64);
-    XFreeGC(dpy,mgc);
-    XImage *im=XCreateImage(dpy,DefaultVisual(dpy,screen_no),DefaultDepth(dpy,screen_no),ZPixmap,0,NULL,sz,sz,32,0);
-    if (!im){ XFreePixmap(dpy,pix); XFreePixmap(dpy,mask); return NULL; }
-    im->data=(char*)malloc((size_t)im->bytes_per_line*sz);
-    if (!im->data){ XDestroyImage(im); XFreePixmap(dpy,pix); XFreePixmap(dpy,mask); return NULL; }
-    /* свет: сверху-слева-спереди; half-вектор для specular */
-    const double lx=-0.42, ly=-0.58, lz=0.70;
-    double hx=lx, hy=ly, hz=lz+1.0; double hl=sqrt(hx*hx+hy*hy+hz*hz); hx/=hl; hy/=hl; hz/=hl;
-    int br=(rgb>>16)&255, bgc=(rgb>>8)&255, bb=rgb&255;
-    for (int y=0;y<sz;y++) for (int x=0;x<sz;x++){
-        double nx=(x-c)/(double)r, ny=(y-c)/(double)r;
-        double d2=nx*nx+ny*ny;
-        if (d2>=1.0){ XPutPixel(im,x,y,0); continue; }
-        double nz=sqrt(1.0-d2);
-        double diff=lx*nx+ly*ny+lz*nz; if (diff<0) diff=0;
-        double ndh=hx*nx+hy*ny+hz*nz; if (ndh<0) ndh=0;
-        double spec=pow(ndh,64.0);                    /* узкий блик «стекла» */
-        double fres=pow(1.0-nz,3.0);                  /* светящийся ободок по краю */
-        double sky=0.5-0.5*ny, ground=0.5+0.5*ny;     /* отражение окружения */
-        double shade=0.24+0.92*diff;
-        double env=sky*0.20-ground*0.10;
-        int R=shade255(br*shade + 255*(spec*0.95+fres*0.30) + br*env + sky*22);
-        int G=shade255(bgc*shade + 255*(spec*0.95+fres*0.30) + bgc*env + sky*22);
-        int B=shade255(bb*shade + 255*(spec*1.00+fres*0.38) + bb*env + sky*30);
-        XPutPixel(im,x,y,pixel_rgb(((unsigned)R<<16)|((unsigned)G<<8)|(unsigned)B));
+/* Классическая иконка рабочего стола: папка / документ / программа */
+static void desk_icon(int cx,int cy,const AppDef *a,int focused){
+    int x=cx-16, y=cy-16;
+    if (!strcmp(a->title,"Файлы")){ /* жёлтая папка */
+        fill_rect(x+2,y+4,12,6,0xe8c84a); bevel(x+2,y+4,12,6,1);
+        fill_rect(x,y+9,32,20,0xf2d060); bevel(x,y+9,32,20,1);
+        fg(0xb8860b); XDrawLine(dpy,backbuf,gc,x+4,y+16,x+28,y+16);
+    } else if (!strcmp(a->cat,"settings")){ /* шестерёнка-«гайка»: квадрат с отверстием */
+        fill_rect(x+4,y+4,24,24,a->rgb); bevel(x+4,y+4,24,24,1);
+        fill_circle(cx,cy,6,0xdddddd); fill_circle(cx,cy,3,0x777777);
+    } else { /* документ/программа: лист с цветной полосой и глифом */
+        fill_rect(x+5,y+2,22,28,0xffffff); bevel(x+5,y+2,22,28,1);
+        fill_rect(x+5,y+2,22,7,a->rgb);
+        fg(0x888888); for(int i=0;i<3;i++) XDrawLine(dpy,backbuf,gc,x+9,y+15+i*4,x+23,y+15+i*4);
+        if (a->glyph) text_c(a->glyph,cx,y+8,0xffffff);
     }
-    XPutImage(dpy,pix,gc,im,0,0,0,0,sz,sz);
-    XDestroyImage(im);
-    BubbleSprite *sp=&bubble_sprites[nbubble_sprites++];
-    sp->rgb=rgb; sp->r=r; sp->pix=pix; sp->mask=mask;
-    return sp;
-}
-
-static void sphere3d(int cx,int cy,int r,unsigned rgb,int focused,double pulse){
-    /* объёмная тень под пузырём */
-    fg(blend(0x05070f,0x000000,0.4));
-    XFillArc(dpy,backbuf,gc,cx-r,cy+r*60/100,r*2,r*46/100,0,360*64);
-    int rr = focused ? (int)(r*1.12) : r;
-    BubbleSprite *sp=bubble_sprite(rgb,rr);
-    if (sp){
-        int pad=8, sz=2*(rr+pad);
-        XSetClipMask(dpy,gc,sp->mask);
-        XSetClipOrigin(dpy,gc,cx-sz/2,cy-sz/2);
-        XCopyArea(dpy,sp->pix,backbuf,gc,0,0,sz,sz,cx-sz/2,cy-sz/2);
-        XSetClipMask(dpy,gc,None);
-        XSetClipOrigin(dpy,gc,0,0);
-    } else { /* запасной путь, если кэш переполнен */
-        for (int k=10;k>=1;k--){
-            int rad=rr*k/10, ox=cx-rr*22/100*k/10, oy=cy-rr*26/100*k/10;
-            fill_circle(ox,oy,rad,blend(blend(rgb,0x000000,0.30),blend(rgb,0xffffff,0.38),(10-k)/10.0));
-        }
-    }
-    draw_circle(cx,cy,rr, blend(rgb,0xffffff,0.35), 1);
-    if (focused){
-        draw_circle(cx,cy,rr+6,0xffffff,2);
-        if (pulse>0.5) draw_circle(cx,cy,rr+11,blend(rgb,0xffffff,0.45),1);
-    }
-}
-
-/* Dreamcast-свёрл: логарифмическая спираль полилинией */
-static void draw_swirl(int cx,int cy,double maxr,double rot,unsigned rgb,int lw){
-    XPoint pts[180]; int n=0; double turns=2.35;
-    for (int i=0;i<170;i++){ double t=i/169.0, a=rot + t*turns*2*M_PI, r=maxr*pow(t,0.72)*(0.25+0.75*t);
-        pts[n++]=(XPoint){(short)(cx+cos(a)*r),(short)(cy+sin(a)*r*0.96)}; }
-    fg(rgb); XSetLineAttributes(dpy,gc,lw,LineSolid,CapRound,JoinRound); XDrawLines(dpy,backbuf,gc,pts,n,CoordModeOrigin);
+    if (focused){ fg(0xffffff); XDrawRectangle(dpy,backbuf,gc,cx-22,cy-22,44,44); fg(0x000000); XDrawRectangle(dpy,backbuf,gc,cx-23,cy-23,46,46); }
 }
 
 /* батарея/питание X550EA: BAT0 + ADP1 (имена стабильны на этой модели) */
@@ -249,8 +172,8 @@ static int target_fps(void){ return (cfg_fps_battery_save && !on_ac()) ? FPS_BAT
 static void path_home(char *out,size_t n,const char *rel){ snprintf(out,n,"%s%s",getenv("HOME")?getenv("HOME"):"/root",rel); }
 static void config_load(void){
     char p[512]; path_home(p,sizeof p,CONFIG_PATH); FILE *f=fopen(p,"r"); if(!f) return; char k[64],v[64];
-    while (fscanf(f,"%63[^=]=%63s\n",k,v)==2){ if(!strcmp(k,"hue"))cfg_hue=atoi(v); else if(!strcmp(k,"swirl"))cfg_swirl=atoi(v)%3;
-        else if(!strcmp(k,"anim"))cfg_anim=atoi(v); else if(!strcmp(k,"fps_battery_save"))cfg_fps_battery_save=atoi(v); else if(!strcmp(k,"dc_default"))cfg_dc_default=atoi(v); }
+    while (fscanf(f,"%63[^=]=%63s\n",k,v)==2){ if(!strcmp(k,"desk"))cfg_desk=atoi(v)%3;
+        else if(!strcmp(k,"anim"))cfg_anim=atoi(v); else if(!strcmp(k,"fps_battery_save"))cfg_fps_battery_save=atoi(v); }
     fclose(f);
 }
 static void config_save(void){
@@ -258,17 +181,12 @@ static void config_save(void){
     /* ~/.config может не быть: создать поэтапно */
     char mk[600]; path_home(mk,sizeof mk,"/.config"); mkdir(mk,0755); path_home(mk,sizeof mk,"/.config/xross"); mkdir(mk,0755);
     FILE *f=fopen(p,"w"); if(!f) return;
-    fprintf(f,"hue=%d\nswirl=%d\nanim=%d\nfps_battery_save=%d\ndc_default=%d\n",cfg_hue,cfg_swirl,cfg_anim,cfg_fps_battery_save,cfg_dc_default); fclose(f);
+    fprintf(f,"desk=%d\nanim=%d\nfps_battery_save=%d\n",cfg_desk,cfg_anim,cfg_fps_battery_save); fclose(f);
 }
 
-/* ───────────────────────── приложения: данные игр ───────────────────────── */
-static struct { double x,y,r; int alive; double born; const char *g; } bubbles[10];
-static int bubble_score;
-static int snake_pts, snake_dir[2], snake_xy[64][2], snake_len, snake_food[2]; static double snake_last;
+/* ───────────────────────── данные приложений ───────────────────────── */
 static char notes_buf[4096]; static int music_track=-1; static double music_t0;
 static int store_progress[4];
-
-static int app_index(int c,int nth){ for(int i=0;i<NAPPS;i++) if(!strcmp(APPS[i].cat,CATS[c][0]) && nth--==0) return i; return -1; }
 
 static void notes_load(void){ char p[512]; path_home(p,sizeof p,NOTES_PATH); FILE *f=fopen(p,"r"); if(f){ size_t n=fread(notes_buf,1,sizeof notes_buf-1,f); notes_buf[n]=0; fclose(f);} }
 static void notes_save(void){ char p[512]; path_home(p,sizeof p,NOTES_PATH); FILE *f=fopen(p,"w"); if(f){ fputs(notes_buf,f); fclose(f);} }
@@ -292,13 +210,13 @@ static void launch_external(const char *cmdline, const char *title){
         fprintf(stderr,"xross: not installed: %s (%s)\n",title,cmdline);
         return;
     }
-    toast_set("Запуск на весь экран… выход: Home / Ctrl+Esc / кнопка ВЫХОД");
+    toast_set("Запуск приложения в окне…");
     pid_t pid=fork();
     if (pid==0){ setsid();
         /* через sh -c: раскрываются ~, переменные и кавычки в командах реестра */
         execl("/bin/sh","sh","-c",cmdline,(char*)NULL); _exit(127); }
     child_pid=pid;
-    XUnmapWindow(dpy,shell_win); XFlush(dpy);
+    XFlush(dpy);
     /* смерть ребёнка ловит главный цикл по kill(pid,0): при SIG_IGN waitpid не работает */
 }
 static void terminate_child(void){
@@ -309,39 +227,47 @@ static void terminate_child(void){
         child_pid=-1;
     }
 }
+/* ── рамка окна внешнего приложения (оконный менеджер) ── */
+static Window frame_win; static int fx=120, fy=60, fw=760, fh=520;
+static int client_max, drag_on, drag_dx, drag_dy, save_x, save_y, save_w, save_h;
+#define TB 22 /* высота полосы заголовка */
+static void draw_frame(void){
+    if (!frame_win || client_win==None) return;
+    GC fgc=XCreateGC(dpy,frame_win,0,NULL);
+    XSetForeground(dpy,fgc,px(0xdddddd)); XFillRectangle(dpy,frame_win,fgc,0,0,fw,TB);
+    XSetForeground(dpy,fgc,px(0x999999));
+    for(int yy=4;yy<TB-3;yy+=3) XDrawLine(dpy,frame_win,fgc,34,yy,fw-30,yy);
+    XSetForeground(dpy,fgc,px(ACCENT_RGB)); XFillRectangle(dpy,frame_win,fgc,4,3,10,16);
+    /* кнопка закрытия слева, разворачивания справа */
+    XSetForeground(dpy,fgc,px(0xdddddd)); XFillRectangle(dpy,frame_win,fgc,18,5,12,12);
+    XSetForeground(dpy,fgc,px(0x000000)); XDrawRectangle(dpy,frame_win,fgc,18,5,12,12);
+    XDrawRectangle(dpy,frame_win,fgc,fw-18,5,12,12); XDrawRectangle(dpy,frame_win,fgc,fw-15,8,6,6);
+    XSetForeground(dpy,fgc,px(0x000000));
+    const char *t="Приложение";
+    if (fontset) Xutf8DrawString(dpy,frame_win,fontset,fgc,fw/2-40,16,t,strlen(t));
+    XFreeGC(dpy,fgc); XFlush(dpy);
+}
+static void frame_apply(void){
+    if (!frame_win) return;
+    XMoveResizeWindow(dpy,frame_win,fx,fy,fw,fh);
+    if (client_win!=None) XMoveResizeWindow(dpy,client_win,0,TB,fw>40?fw-2:fw,fh>TB+2?fh-TB-2:fh-TB);
+    draw_frame();
+}
 static void close_client(void){
     if (client_win!=None){ XKillClient(dpy,client_win); client_win=None; }
     terminate_child();
-    if (exit_win && exit_visible){ XUnmapWindow(dpy,exit_win); exit_visible=0; }
+    if (frame_win){ XDestroyWindow(dpy,frame_win); frame_win=None; }
+    client_max=0; drag_on=0;
     XMapRaised(dpy,shell_win); XSetInputFocus(dpy,shell_win,RevertToParent,CurrentTime);
-    mode = cfg_dc_default?MODE_DC:MODE_XMB; open_app=APP_NONE;
+    mode=MODE_DESKTOP; open_app=APP_NONE;
     toast_set("Приложение закрыто");
-}
-/* плавающая кнопка «Выход» поверх внешнего приложения + её отрисовка */
-static void draw_exit_button(void){
-    if (!exit_win) return;
-    fg(0xb00020); XFillRectangle(dpy,exit_win,gc,0,0,132,34);
-    fg(0xffffff);
-    const char *t="X  ВЫХОД";
-    if (fontset) Xutf8DrawString(dpy,exit_win,fontset,gc,26,23,t,strlen(t));
-    else XDrawString(dpy,exit_win,gc,26,23,t,strlen(t));
-    fg(0xffffff); XFillArc(dpy,exit_win,gc,6,10,14,14,0,360*64);
-    fg(0xb00020); XFillArc(dpy,exit_win,gc,8,12,10,10,0,360*64);
-}
-static void sync_exit_button(void){
-    if (!exit_win) return;
-    int want = (client_win!=None || child_pid>0);
-    if (want && !exit_visible){ XMapRaised(dpy,exit_win); exit_visible=1; draw_exit_button(); XFlush(dpy); }
-    else if (!want && exit_visible){ XUnmapWindow(dpy,exit_win); exit_visible=0; }
 }
 
 static void open_app_idx(int ai){
     if (ai<0) return;
     if (APPS[ai].ext){ launch_external(APPS[ai].cmd, APPS[ai].title); return; }
     open_app=ai; mode=MODE_APP;
-    if (!strcmp(APPS[ai].title,"Пузыри")){ bubble_score=0; for(int i=0;i<10;i++){ bubbles[i].alive=1; bubbles[i].x=80+rand()%(W>240?W-240:200); bubbles[i].y=140+rand()%(H>300?H-300:200); bubbles[i].r=26+rand()%30; bubbles[i].born=now_sec(); bubbles[i].g="*"; } }
-    if (!strcmp(APPS[ai].title,"Змейка")){ snake_len=3; snake_pts=0; snake_dir[0]=1; snake_dir[1]=0; snake_xy[0][0]=8; snake_xy[0][1]=8; snake_food[0]=15; snake_food[1]=10; snake_last=now_sec(); }
-    char b[128]; snprintf(b,sizeof b,"%s — на весь экран · Esc — выход",APPS[ai].title); toast_set(b);
+    char b[128]; snprintf(b,sizeof b,"%s · Esc — закрыть окно",APPS[ai].title); toast_set(b);
 }
 
 /* ───────────────────────── голос ───────────────────────── */
@@ -368,7 +294,7 @@ static void voice_handle(char *cmd){
             /* грубое сравнение: название приложения содержится/подстрока на русском в нижнем регистре даёт демон */
             if (strstr(low,needle)||strstr(needle,low)){ open_app_idx(i); return voice_feedback(APPS[i].title); } }
         /* fallback: популярные синонимы */
-        struct { const char *w; const char *title; } syn[]={{"музык","Музыка"},{"настрой","Настройки системы"},{"файл","Файлы"},{"термин","Терминал (xterm)"},{"брауз","Браузер Firefox"},{"игр","Пузыри"},{"замет","Заметки"},{"фото","Фотографии"}};
+        struct { const char *w; const char *title; } syn[]={{"музык","Музыка"},{"настрой","Настройки системы"},{"файл","Файлы"},{"термин","Терминал (xterm)"},{"брауз","Браузер Firefox"},{"замет","Заметки"},{"фото","Фотографии"}};
         for(unsigned i=0;i<sizeof syn/sizeof syn[0];i++) if(strstr(cmd,syn[i].w)){ for(int j=0;j<NAPPS;j++) if(!strcmp(APPS[j].title,syn[i].title)){ open_app_idx(j); return; } }
         return voice_feedback("Приложение не найдено"); }
     if (strstr(cmd,"выбери")||strstr(cmd,"выбрать")||strstr(cmd,"ок")) return do_select();
@@ -380,239 +306,194 @@ static void voice_poll(void){
 }
 
 /* ───────────────────────── навигация ───────────────────────── */
-#define GRID_COLS 5
+#define DESK_COLS 2
 static void do_move(int dc,int di){
-    if (mode==MODE_APP){ if(open_app>=0&&!strcmp(APPS[open_app].title,"Змейка")){ if(dc){snake_dir[0]=dc;snake_dir[1]=0;} if(di){snake_dir[0]=0;snake_dir[1]=di;} } return; }
-    if (mode==MODE_DC){ if(dc) cat_idx=(cat_idx+dc+NCATS)%NCATS; return; }
-    if (mode!=MODE_XMB) { mode=MODE_XMB; return; }
-    /* сетка пузырей PS Vita: ←→ по строке, ↑↓ между строками */
+    if (mode==MODE_APP) return;
+    if (mode!=MODE_DESKTOP) { mode=MODE_DESKTOP; return; }
+    /* иконки двумя колонками справа: ←→ между колонками, ↑↓ по колонке */
     if (dc) item_idx=(item_idx+dc+NAPPS)%NAPPS;
-    if (di) item_idx=(item_idx+di*GRID_COLS+NAPPS)%NAPPS;
+    if (di) item_idx=(item_idx+di*DESK_COLS+NAPPS)%NAPPS;
 }
 static void do_select(void){
-    if (mode==MODE_BOOT){ mode=cfg_dc_default?MODE_DC:MODE_XMB; return; }
-    if (mode==MODE_DC){ /* орбита Dreamcast: 4 сферы = Играть/Файлы/Музыка/Настройки */
-        static const char *orbit_cat[4]={"game","apps","music","settings"};
-        for(int i=0;i<NCATS;i++) if(!strcmp(CATS[i][0],orbit_cat[cat_idx%4])){ cat_idx=i; break; }
-        int f=app_index(cat_idx,0); if(f>=0) item_idx=f; mode=MODE_XMB; return; }
-    if (mode==MODE_XMB) open_app_idx(item_idx);
+    if (mode==MODE_BOOT){ mode=MODE_DESKTOP; return; }
+    if (mode==MODE_DESKTOP) open_app_idx(item_idx);
 }
 static void do_back(void){
-    if (mode==MODE_APP){ open_app=APP_NONE; mode=cfg_dc_default?MODE_DC:MODE_XMB; if(music_track>=0) music_track=-1; notes_save(); return; }
-    if (mode==MODE_DC) mode=MODE_XMB;
+    if (mode==MODE_APP){ open_app=APP_NONE; mode=MODE_DESKTOP; if(music_track>=0) music_track=-1; notes_save(); return; }
     if (client_win!=None||child_pid>0) close_client();
 }
 
-/* ───────────────────────── фон: градиент + волна PS3 ───────────────────────── */
-static Pixmap bg_cache; static int bg_hue_cache=-1, bg_w, bg_h;
-static unsigned hue_rgb(int hue,double l,double s){ /* HSL->RGB упрощённо через blend палитры */
-    static const unsigned pal[6]={0xff3b30,0xffcc00,0x35c759,0x32ade6,0x5856d6,0xff2d55};
-    double pos=(hue%360)/60.0; int i=(int)pos; unsigned c=blend(pal[i%6],pal[(i+1)%6],pos-i);
-    return blend(c, l>0.5?0xffffff:0x05070f, l>0.5?(l-0.5)*1.2:(0.5-l)*1.4 + (1-s)*0.2);
-}
-static void render_bg(void){
-    if (bg_cache && bg_hue_cache==cfg_hue && bg_w==W && bg_h==H) { XCopyArea(dpy,bg_cache,backbuf,gc,0,0,W,H,0,0); return; }
+/* ───────────────────────── фон рабочего стола ───────────────────────── */
+static Pixmap bg_cache; static int bg_desk_cache=-1, bg_w, bg_h;
+static void render_desktop_bg(void){
+    if (bg_cache && bg_desk_cache==cfg_desk && bg_w==W && bg_h==H) { XCopyArea(dpy,bg_cache,backbuf,gc,0,0,W,H,0,0); return; }
     if (bg_cache) XFreePixmap(dpy,bg_cache);
-    bg_cache=XCreatePixmap(dpy,root_win,W,H,DefaultDepth(dpy,screen_no)); bg_hue_cache=cfg_hue; bg_w=W; bg_h=H;
-    /* вертикальный градиент полосами по 4px: дёшево даже на Jaguar */
+    bg_cache=XCreatePixmap(dpy,root_win,W,H,DefaultDepth(dpy,screen_no)); bg_desk_cache=cfg_desk; bg_w=W; bg_h=H;
     GC g2=XCreateGC(dpy,bg_cache,0,NULL);
-    for(int y=0;y<H;y+=4){ double t=(double)y/H; unsigned c=hue_rgb(cfg_hue, 0.10+0.10*sin(t*2.2), 0.8);
-        XSetForeground(dpy,g2,px(c)); XFillRectangle(dpy,bg_cache,g2,0,y,W,4); }
+    unsigned base=DESK_RGB[cfg_desk];
+    XSetForeground(dpy,g2,px(base)); XFillRectangle(dpy,bg_cache,g2,0,0,W,H);
+    /* классический точечный паттерн рабочего стола */
+    XSetForeground(dpy,g2,px(blend(base,0x000000,0.18)));
+    for(int y=8;y<H;y+=16) for(int x=((y/16)%2?8:0);x<W;x+=16) XFillRectangle(dpy,bg_cache,g2,x,y,2,2);
     XFreeGC(dpy,g2); XCopyArea(dpy,bg_cache,backbuf,gc,0,0,W,H,0,0);
-    /* блёстки PS3 */
-    srand(42); for(int i=0;i<60;i++){ int x=rand()%W,y=rand()%H; fill_circle(x,y,1,blend(hue_rgb(cfg_hue,.8,.6),0xffffff,.5)); }
-    srand(time(NULL));
 }
 
 /* ───────────────────────── отрисовка экранов ───────────────────────── */
+static int menu_open;
 static void draw_topbar(void){
-    fill_rect(0,0,W,44,0x0b1020);
-    text("XrossOS " XROSS_VERSION " «" XROSS_CODENAME "»",22,29,0xffffff);
+    fill_rect(0,0,W,24,0xdddddd);
+    fg(0x777777); XDrawLine(dpy,backbuf,gc,0,24,W,24);
+    text("◆ XrossOS",10,17,0x000000); add_hit(0,0,110,24,ACT_MENU,0);
+    text("Файл",122,17,0x000000); text("Правка",186,17,0x000000); text("Вид",262,17,0x000000); text("Окно",310,17,0x000000);
     time_t tt=time(NULL); char b[96]; struct tm *tmv=localtime(&tt);
     int bat=battery_pct();
-    snprintf(b,sizeof b,"%s  %02d:%02d", bat>=0?"BAT":"", tmv->tm_hour,tmv->tm_min);
-    if (bat>=0){ char bb[32]; snprintf(bb,sizeof bb,"%d%%",bat); text(bb,W-170,29,0xa7f3d0); }
-    text(b,W-120,29,0xffffff);
-    text("🎤 V",W-230,29,0xff8fa8); /* emoji может отсутствовать в шрифте — рядом подпись V */
-    text("V=голос",W-300,29,0xff8fa8);
+    if (bat>=0){ char bb[40]; snprintf(bb,sizeof bb,"Батарея %d%%",bat); text(bb,W-330,17,0x000000); }
+    snprintf(b,sizeof b,"%02d:%02d",tmv->tm_hour,tmv->tm_min);
+    text(b,W-64,17,0x000000);
+    text("V — голос",W-250,17,0x444444);
+    if (menu_open){
+        panel(4,26,240,92);
+        text("О системе",16,50,0x000000); add_hit(4,30,240,28,ACT_MENUITEM,2);
+        text("Настройки системы",16,78,0x000000); add_hit(4,58,240,28,ACT_MENUITEM,0);
+        text("Голосовое управление",16,106,0x000000); add_hit(4,86,240,30,ACT_MENUITEM,1);
+    }
 }
 
 static void draw_boot(double t){
-    fill_rect(0,0,W,H,0xf4f6f8); /* белая заставка Dreamcast */
-    double p = t<1.6 ? t/1.6 : 1.0; double ease=1-pow(1-p,3);
-    draw_swirl(W/2,H/2-40, 150*ease, t*1.8, SWIRL_RGB[cfg_swirl], 7);
-    text_c("XrossOS",W/2,H/2+150,0x203040);
-    text_c("Нажмите Enter · Press Start",W/2,H/2+182,0x5a6a7a);
-    if (t>3.2) mode=cfg_dc_default?MODE_DC:MODE_XMB;
+    render_desktop_bg();
+    int w=420,h=190,x=W/2-w/2,y=H/2-h/2;
+    fill_rect(x+6,y+6,w,h,0x333333);
+    panel(x,y,w,h); titlebar(x,y,w,"Добро пожаловать",1);
+    text_c("XrossOS " XROSS_VERSION,w/2+x,y+78,0x000000);
+    text_c("Классическая оконная среда",W/2,y+104,0x444444);
+    int bw=w-80; fill_rect(x+40,y+128,bw,16,0xffffff); bevel(x+40,y+128,bw,16,0);
+    double pr=t/2.2; if(pr>1)pr=1; fill_rect(x+42,y+130,(int)((bw-4)*pr),12,0x3366cc);
+    text_c("Enter — пропустить",W/2,y+168,0x444444);
+    if (t>2.2) mode=MODE_DESKTOP;
 }
 
-static void draw_vita_home(double t){
-    render_bg();
-    /* «волны» PS Vita на фоне + парящие пузырьки */
-    for(int layer=0;layer<2;layer++){
-        XPoint pts[220]; int n=0; double yb=H*0.30+layer*H*0.24;
-        for(int x=0;x<=W&&n<220;x+=10){ double y=yb+sin(x/260.0+t*0.5+layer*2.0)*26+sin(x/130.0-t*0.35)*10; pts[n++]=(XPoint){(short)x,(short)y}; }
-        fg(blend(hue_rgb(cfg_hue+layer*40,.62,.8),0xffffff,0.12)); XSetLineAttributes(dpy,gc,3,LineSolid,CapRound,JoinRound);
-        XDrawLines(dpy,backbuf,gc,pts,n,CoordModeOrigin);
-    }
-    for(int i=0;i<14;i++){ int x=(i*197)%(W-40)+20, y=70+(i*131)%(H-190); fill_circle(x,y+(int)(sin(t*0.9+i)*7),3,blend(hue_rgb(cfg_hue+i*24,.7,.7),0xffffff,.45)); }
+/* ── рабочий стол: иконки справа (Mac) + нижняя строка состояния ── */
+#define DESK_COLS 2
+static void draw_desktop(double t){
+    render_desktop_bg();
     nhits=0;
-    /* сетка пузырей LiveArea */
-    int cols=GRID_COLS, rows=(NAPPS+cols-1)/cols;
-    int cellw=W/cols, cellh=(H-210)/rows; if(cellh>132) cellh=132;
-    int y0=104;
-    double pulse=0.5+0.5*sin(t*3.2);
+    int cellw=150, cellh=104, x0=W-DESK_COLS*cellw-10, y0=40;
     for(int i=0;i<NAPPS;i++){
-        int col=i%cols, row=i/cols;
-        int cx=cellw*col+cellw/2, cy=y0+cellh*row+cellh/2 + (int)(sin(t*1.4+i*0.7)*3);
+        int col=i%DESK_COLS, row=i/DESK_COLS;
+        int cx=x0+col*cellw+cellw/2, cy=y0+row*cellh+34;
         int focused=(i==item_idx);
-        int r=cellh*36/100; if(r>46) r=46; if(r<26) r=26;
-        sphere3d(cx,cy,r,APPS[i].rgb,focused,pulse);
-        /* глиф приложения: тень + белый — буква «лежит» на сфере */
-        if (APPS[i].glyph){ text_c(APPS[i].glyph,cx+1,cy+8,blend(APPS[i].rgb,0x000000,0.55)); text_c(APPS[i].glyph,cx,cy+7,0xffffff); }
-        if (focused){
-            /* подпись выбранного пузыря — как в LiveArea */
-            text_c(APPS[i].title,cx,cy+r+24,0xffffff);
-        }
-        add_hit(cx-cellw/2+6,cy-cellh/2+4,cellw-12,cellh-8,ACT_ITEM,i);
+        desk_icon(cx,cy,&APPS[i],focused);
+        /* подпись: в одну или две строки, у выбранной — чёрным по белому */
+        const char *title=APPS[i].title;
+        int ly=cy+44;
+        if (focused){ int tw=text_w(title); fill_rect(cx-tw/2-4,ly-15,tw+8,20,0xffffff); }
+        /* перенос по последнему пробелу, если не влезает */
+        char l1[64]="",l2[64]="";
+        if (text_w(title)>cellw-8){ const char *sp=strrchr(title,' ');
+            if(sp){ snprintf(l1,sizeof l1,"%.*s",(int)(sp-title),title); snprintf(l2,sizeof l2,"%s",sp+1); }
+            else snprintf(l1,sizeof l1,"%s",title);
+        } else snprintf(l1,sizeof l1,"%s",title);
+        text_c(l1,cx,ly,focused?0x000000:0xffffff);
+        if(l2[0]) text_c(l2,cx,ly+18,focused?0x000000:0xffffff);
+        add_hit(cx-cellw/2,cy-30,cellw,cellh-8,ACT_ITEM,i);
     }
-    /* карточка выбранного приложения внизу + точки страниц */
-    int panel_y=H-118; if(panel_y<y0+cellh*rows+8) panel_y=y0+cellh*rows+8;
-    fill_rect(28,panel_y,W-56,64,0x101a30);
-    sphere3d(66,panel_y+32,15,APPS[item_idx].rgb,0,0);
-    if (APPS[item_idx].glyph) text_c(APPS[item_idx].glyph,66,panel_y+39,0xffffff);
-    text(APPS[item_idx].title,96,panel_y+30,0xffffff);
-    text(APPS[item_idx].sub,96,panel_y+52,0x8fa0b8);
-    text(APPS[item_idx].ext?"Внешнее · на весь экран · выход — Home / Ctrl+Esc / кнопка ВЫХОД":"Встроенное приложение · Esc — назад",W/2+60,panel_y+30,0xa7f3d0);
-    int pages=rows, cur=item_idx/cols;
-    for(int i=0;i<pages;i++) fill_circle(W/2+(i-(pages-1)*0.5)*16,panel_y+84, i==cur?5:3, i==cur?0xffffff:0x5a6c8c);
-}
-
-static void draw_dc(double t){
-    render_bg();
-    draw_swirl(W/2,H/2-30,120, t*0.35, SWIRL_RGB[cfg_swirl],6);
-    static const char *names[4]={"Играть","Файлы","Музыка","Настройки"};
-    static const unsigned cols[4]={0x4cc9f0,0xffd166,0xff7ac6,0x9aa7b4};
-    nhits=0;
-    for(int i=0;i<4;i++){
-        double a=t*0.22 + i*M_PI/2.0; int cx=W/2+(int)(cos(a)*210), cy=H/2-30+(int)(sin(a)*92);
-        int sel=(cat_idx%4==i); sphere3d(cx,cy,sel?46:38,cols[i],sel,0.5+0.5*sin(t*3.2)); text_c(names[i],cx,cy+70,0xffffff);
-        add_hit(cx-52,cy-52,104,104,ACT_DC_ORBIT,i);
-    }
-    text_c("Dreamcast-меню · Enter — открыть раздел · F1 — XMB",W/2,H-56,0xdbe7f5);
+    /* нижняя полоса: выбранное приложение и подсказка */
+    fill_rect(0,H-26,W,26,0xdddddd); bevel(0,H-26,W,26,1);
+    char b[320]; snprintf(b,sizeof b,"%s — %s",APPS[item_idx].title,APPS[item_idx].sub);
+    text(b,10,H-8,0x000000);
+    text("Enter — открыть · двойной клик — открыть · Esc — закрыть окно",W-560,H-8,0x444444);
 }
 
 static void card(int x,int y,int w,int h,const char *title){
-    fill_rect(x,y,w,h,0x16203a); if(title) text(title,x+16,y+26,0xffffff);
+    panel(x,y,w,h); if(title) text(title,x+16,y+26,0x000000);
 }
 static void draw_app(double t){
-    fill_rect(0,0,W,H,0x0a1122);
+    draw_desktop(t);
     const AppDef *a=&APPS[open_app];
-    text(a->title,28,42,0xffffff); text("Esc/Home — назад",W-190,42,0x8fa0b8);
-    int y=76;
+    fill_rect(20,42,W-34,H-62,0x333333);            /* тень окна */
+    panel(14,36,W-28,H-68);                          /* окно */
+    titlebar(14,36,W-28,a->title,1);
+    add_hit(14+18,36+5,12,12,ACT_CLOSEWIN,0);
+    text("Esc — закрыть",W-170,88,0x444444);
+    int y=92;
     if (!strcmp(a->title,"Настройки системы")){
-        static const int hues[6]={222,265,190,330,150,20};
-        card(28,y,W-56,86,"Тема волны PS3"); for(int i=0;i<6;i++){ int cx=70+i*64; fill_circle(cx,y+58,20,hue_rgb(hues[i],.55,.85)); if(cfg_hue==hues[i]) draw_circle(cx,y+58,24,0xffffff,2); add_hit(cx-24,y+34,48,48,ACT_SETTING,i);} y+=100;
-        card(28,y,W-56,64,"Свёрл Dreamcast: EU синий / JP оранжевый / US красный"); for(int i=0;i<3;i++){ int cx=70+i*64; fill_circle(cx,y+42,16,SWIRL_RGB[i]); if(cfg_swirl==i) draw_circle(cx,y+42,20,0xffffff,2); add_hit(cx-22,y+20,44,44,ACT_SETTING,10+i);} y+=78;
-        char b[128]; snprintf(b,sizeof b,"Анимации: %s   ·   30 FPS от батареи (X550EA): %s   ·   Старт в меню Dreamcast: %s",cfg_anim?"ВКЛ":"ВЫКЛ",cfg_fps_battery_save?"ВКЛ":"ВЫКЛ",cfg_dc_default?"ДА":"НЕТ");
-        card(28,y,W-56,58,b); add_hit(28,y,W/3,58,ACT_SETTING,20); add_hit(28+W/3,y,W/3,58,ACT_SETTING,21); add_hit(28+2*W/3,y,W/3-56,58,ACT_SETTING,22); y+=72;
-        text("Клик по строке переключает параметр. Всё сохраняется в ~/.config/xross/xross.conf",28,y+20,0x8fa0b8);
+        card(28,y,W-56,86,"Цвет рабочего стола"); for(int i=0;i<3;i++){ int cx=70+i*64; fill_rect(cx-20,y+34,40,40,DESK_RGB[i]); bevel(cx-20,y+34,40,40,1); if(cfg_desk==i){ fg(0x000000); XDrawRectangle(dpy,backbuf,gc,cx-24,y+30,48,48); } add_hit(cx-24,y+30,48,48,ACT_SETTING,i);} y+=100;
+        char b[160]; snprintf(b,sizeof b,"Анимации: %s      30 FPS от батареи (X550EA): %s",cfg_anim?"ВКЛ":"ВЫКЛ",cfg_fps_battery_save?"ВКЛ":"ВЫКЛ");
+        card(28,y,W-56,58,b); add_hit(28,y,W/3,58,ACT_SETTING,20); add_hit(28+W/3,y,W/3,58,ACT_SETTING,21); y+=72;
+        text("Клик переключает параметр. Сохраняется в ~/.config/xross/xross.conf",28,y+20,0x444444);
     } else if (!strcmp(a->title,"Голосовое управление")){
-        card(28,y,W-56,220,NULL); text_c("Голосовое управление (Vosk, офлайн)",W/2,y+44,0xffffff);
-        text_c("Клавиша V в оболочке · в фоне работает xross-voiced",W/2,y+78,0xc8d2e0);
-        text_c("«открой музыку» · «вниз» · «выбери» · «домой» · «который час» · «помощь»",W/2,y+112,0xff8fa8);
-        text_c("Демон пишет фразы в " VOICE_FIFO_PATH " — оболочка читает их без блокировок",W/2,y+146,0x8fa0b8);
+        card(28,y,W-56,220,NULL); text_c("Голосовое управление (Vosk, офлайн)",W/2,y+44,0x000000);
+        text_c("Клавиша V в оболочке · в фоне работает xross-voiced",W/2,y+78,0x333333);
+        text_c("«открой музыку» · «вниз» · «выбери» · «домой» · «который час» · «помощь»",W/2,y+112,0xb03060);
+        text_c("Демон пишет фразы в " VOICE_FIFO_PATH " — оболочка читает их без блокировок",W/2,y+146,0x555555);
     } else if (!strcmp(a->title,"О системе")){
         card(28,y,W-56,280,NULL); char b[256];
-        snprintf(b,sizeof b,"XrossOS %s «%s» · оболочка C/Xlib (X11/XLibre) · только libX11",XROSS_VERSION,XROSS_CODENAME); text(b,48,y+36,0xffffff);
-        text("Хост-референс: ASUS X550EA — AMD A4-5000 (Jaguar, btver2), Radeon HD 8330 (GCN1, radeonsi)",48,y+68,0xc8d2e0);
-        text("Панель 1366x768 · 4 ГБ DDR3L · рендер программный Pixmap, без композитора",48,y+96,0xc8d2e0);
-        snprintf(b,sizeof b,"Экран: %dx%d · FPS сейчас: %d (батарея: экономия %s)",W,H,target_fps(),cfg_fps_battery_save?"вкл":"выкл"); text(b,48,y+124,0xc8d2e0);
-        text("Все внешние приложения: xross как WM разворачивает каждое окно на весь экран",48,y+152,0xa7f3d0);
-        text("Ссылки на docs/x550ea.md — тюнинг ядра, amdgpu SI, zram, BFQ для HDD",48,y+180,0x8fa0b8);
+        snprintf(b,sizeof b,"XrossOS %s «%s» · оболочка C/Xlib (X11/XLibre) · только libX11",XROSS_VERSION,XROSS_CODENAME); text(b,48,y+36,0x000000);
+        text("Хост-референс: ASUS X550EA — AMD A4-5000 (Jaguar, btver2), Radeon HD 8330 (GCN1, radeonsi)",48,y+68,0x333333);
+        text("Панель 1366x768 · 4 ГБ DDR3L · рендер программный Pixmap, без композитора",48,y+96,0x333333);
+        snprintf(b,sizeof b,"Экран: %dx%d · FPS сейчас: %d (батарея: экономия %s)",W,H,target_fps(),cfg_fps_battery_save?"вкл":"выкл"); text(b,48,y+124,0x333333);
+        text("Все внешние приложения открываются в окнах с рамкой: закрытие, разворачивание, перетаскивание",48,y+152,0x006644);
+        text("Ссылки на docs/x550ea.md — тюнинг ядра, amdgpu SI, zram, BFQ для HDD",48,y+180,0x555555);
     } else if (!strcmp(a->title,"Фотографии")){
-        const unsigned g[6]={0xff5c7a,0x4cc9f0,0xf5b301,0x7c5cff,0x38d39f,0xff8a5c};
-        for(int i=0;i<6;i++){ int x=28+(i%3)*((W-56)/3), yy=y+(i/3)*190, w=(W-70)/3; fill_rect(x,yy,w,176,g[i]); text_c("Фото",x+w/2,yy+96,0xffffff); add_hit(x,yy,w,176,ACT_TILE,i); }
+        const unsigned g[6]={0xff5c7a,0x3366cc,0x8a6d00,0x7c5cff,0x38d39f,0xff8a5c};
+        for(int i=0;i<6;i++){ int x=28+(i%3)*((W-56)/3), yy=y+(i/3)*190, w=(W-70)/3; fill_rect(x,yy,w,176,g[i]); text_c("Фото",x+w/2,yy+96,0x000000); add_hit(x,yy,w,176,ACT_STORE,99); }
     } else if (!strcmp(a->title,"Музыка")){
         static const char *tr[3]={"Волна океана","Неоновый город","Звёздная пыль"};
-        for(int i=0;i<3;i++){ card(28,y,W-56,58,tr[i]); char b[32]; snprintf(b,sizeof b,"%s",music_track==i?"■ играет":"▶ слушать"); text(b,W-170,y+36,0xff7ac6); add_hit(28,y,W-56,58,ACT_TRACK,i); y+=70; }
+        for(int i=0;i<3;i++){ card(28,y,W-56,58,tr[i]); char b[32]; snprintf(b,sizeof b,"%s",music_track==i?"■ играет":"▶ слушать"); text(b,W-170,y+36,0xb03060); add_hit(28,y,W-56,58,ACT_TRACK,i); y+=70; }
         /* эквалайзер: дёшевые прямоугольники по синусам */
-        for(int i=0;i<24;i++){ int h=music_track>=0? (int)(30+70*fabs(sin(t*6+i))):8; fill_rect(40+i*26,H-60-h,16,h,0xff7ac6); }
-        if (music_track>=0) text("Звук на реальной ОС: файлы открывает mpv/VLC на весь экран; здесь — визуализация",28,H-80,0x8fa0b8);
-    } else if (!strcmp(a->title,"Пузыри")){
-        char b[160]; snprintf(b,sizeof b,"Лопнуто: %d / 10 · клик или касание по сфере",bubble_score); text(b,28,y+8,0xffffff);
-        for(int i=0;i<10;i++){ if(!bubbles[i].alive) continue; double bob=sin(t*2+i)*6; sphere3d((int)bubbles[i].x,(int)(bubbles[i].y+bob),(int)bubbles[i].r,0x4cc9f0,false,0); }
-        /* хитбоксы сфер обновляются кликом через ACT_TILE с координатной проверкой в обработчике */
-        add_hit(0,60,W,H-60,ACT_TILE,77);
-    } else if (!strcmp(a->title,"Змейка")){
-        const int cs=20, ox=W/2-260, oy=110; fill_rect(ox,oy,520,520,0x05070f);
-        if (now_sec()-snake_last>0.13){ snake_last=now_sec();
-            for(int i=snake_len-1;i>0;i--){ snake_xy[i][0]=snake_xy[i-1][0]; snake_xy[i][1]=snake_xy[i-1][1]; }
-            snake_xy[0][0]+=snake_dir[0]; snake_xy[0][1]+=snake_dir[1];
-            if(snake_xy[0][0]<0||snake_xy[0][1]<0||snake_xy[0][0]>=26||snake_xy[0][1]>=26){ snake_xy[0][0]=8; snake_xy[0][1]=8; snake_pts=0; snake_len=3; }
-            if(snake_xy[0][0]==snake_food[0]&&snake_xy[0][1]==snake_food[1]){ snake_pts++; if(snake_len<63)snake_len++; snake_food[0]=rand()%26; snake_food[1]=rand()%26; }
-        }
-        fill_rect(ox+snake_food[0]*cs+3,oy+snake_food[1]*cs+3,cs-6,cs-6,0xff5c7a);
-        for(int i=snake_len-1;i>=0;i--) fill_rect(ox+snake_xy[i][0]*cs+2,oy+snake_xy[i][1]*cs+2,cs-4,cs-4,0x38d39f);
-        char b[160]; snprintf(b,sizeof b,"Очки: %d · стрелки или голос «вверх/вниз/влево/вправо»",snake_pts); text(b,ox,oy+548,0xffffff);
+        for(int i=0;i<24;i++){ int h=music_track>=0? (int)(30+70*fabs(sin(t*6+i))):8; fill_rect(40+i*26,H-60-h,16,h,0xb03060); }
+        if (music_track>=0) text("Звук на реальной ОС: файлы открывает mpv в окне; здесь — визуализация",28,H-80,0x555555);
     } else if (!strcmp(a->title,"Магазин")){
         static const char *st[4]={"Telegram","RetroArch (уже есть)","Kodi (уже есть)","GIMP"};
-        for(int i=0;i<4;i++){ card(28,y,W-56,64,st[i]); char b[64]; snprintf(b,sizeof b,"%s",store_progress[i]>=100?"установлено":store_progress[i]>0?"установка…":"Установить (apk)"); text(b,W-260,y+40,0xf5b301);
-            if(store_progress[i]>0&&store_progress[i]<100){ store_progress[i]+=2; fill_rect(48,y+46,(W-120)*store_progress[i]/100,6,0x4cc9f0); if(store_progress[i]>=100) toast_set("Установлено: ярлык появится в XMB после перезапуска оболочки"); }
+        for(int i=0;i<4;i++){ card(28,y,W-56,64,st[i]); char b[64]; snprintf(b,sizeof b,"%s",store_progress[i]>=100?"установлено":store_progress[i]>0?"установка…":"Установить (apk)"); text(b,W-260,y+40,0x8a6d00);
+            if(store_progress[i]>0&&store_progress[i]<100){ store_progress[i]+=2; fill_rect(48,y+46,(W-120)*store_progress[i]/100,6,0x3366cc); if(store_progress[i]>=100) toast_set("Установлено: значок появится на рабочем столе после перезапуска оболочки"); }
             add_hit(28,y,W-56,64,ACT_STORE,i); y+=76; }
     } else if (!strcmp(a->title,"Файлы")){
         struct dirent **list=NULL; const char *home=getenv("HOME")?getenv("HOME"):".";
         int n=scandir(home,&list,NULL,alphasort); int shown=0;
         for(int i=0;i<n&&shown<12;i++){ if(list[i]->d_name[0]=='.'){ free(list[i]); continue; } card(28,y,W-56,50,list[i]->d_name); free(list[i]); y+=60; shown++; }
-        free(list); if(!shown) text("Каталог пуст или недоступен",28,y+20,0x8fa0b8);
+        free(list); if(!shown) text("Каталог пуст или недоступен",28,y+20,0x555555);
     } else if (!strcmp(a->title,"Заметки")){
         card(28,y,W-56,H-140,"Печатайте — сохраняется автоматически (Esc — выход)");
         /* перенос по словам не делаем: режем на строки по 90 символов для экрана */
         char tmp[4096]; snprintf(tmp,sizeof tmp,"%s",notes_buf); int yy=y+52;
-        for(char *p=tmp; *p && yy<H-40;){ char *nl=strchr(p,'\n'); int len=nl? (int)(nl-p):(int)strlen(p); if(len>90)len=90; char line[96]; memcpy(line,p,len); line[len]=0; text(line,48,yy,0xffffff); yy+=22; p+= (nl&&len==(int)(nl-p))? len+1:len; if(!nl&&len>=(int)strlen(p)) break; }
-        if(!notes_buf[0]) text("Пустая заметка…",48,y+52,0x8fa0b8);
-    } else if (!strcmp(a->title,"Профиль игрока")){
-        card(28,y,W-56,170,NULL); text_c("Гость",W/2,y+52,0xffffff); text_c("Трофеев: 3 · время в системе: 12 ч · вход локальный",W/2,y+86,0xc8d2e0);
-    } else if (!strcmp(a->title,"Достижения")){
-        static const char *tr[4][2]={{"Первый запуск","Открыть XrossOS"},{"Голос!","Первая голосовая команда"},{"Меломан","Открыть музыку"},{"Ловец сфер","10 пузырей в мини-игре"}};
-        for(int i=0;i<4;i++){ card(28,y,W-56,56,tr[i][0]); text(tr[i][1],48,y+42,0x8fa0b8); y+=68; }
+        for(char *p=tmp; *p && yy<H-40;){ char *nl=strchr(p,'\n'); int len=nl? (int)(nl-p):(int)strlen(p); if(len>90)len=90; char line[96]; memcpy(line,p,len); line[len]=0; text(line,48,yy,0x000000); yy+=22; p+= (nl&&len==(int)(nl-p))? len+1:len; if(!nl&&len>=(int)strlen(p)) break; }
+        if(!notes_buf[0]) text("Пустая заметка…",48,y+52,0x555555);
     } else {
-        card(28,y,W-56,120,a->sub); text("Встроенный экран-заглушка. Внешние приложения запускаются на весь экран.",48,y+52,0xc8d2e0);
+        card(28,y,W-56,120,a->sub); text("Встроенное окно. Внешние приложения открываются в окнах с рамкой.",48,y+52,0x333333);
     }
 }
 
 static void draw(double t){
     nhits=0;
     if (mode==MODE_BOOT) draw_boot(t-boot_t0);
-    else if (mode==MODE_DC) draw_dc(t);
     else if (mode==MODE_APP && open_app>=0) draw_app(t);
-    else draw_vita_home(t);
+    else draw_desktop(t);
     draw_topbar();
-    if (now_sec()<toast_until){ int w=text_w(toast_msg)+36; fill_rect(W/2-w/2,58,w,34,0x0b1020); text_c(toast_msg,W/2,80,0xffffff); }
-    if (mode!=MODE_BOOT) text("Стрелки+Enter · выход из приложений: Home / Ctrl+Esc / кнопка ВЫХОД · F1 Dreamcast · V голос",18,H-14,0x9fb2cc);
+    if (now_sec()<toast_until){ int w=text_w(toast_msg)+36; fill_rect(W/2-w/2,34,w,30,0xdddddd); bevel(W/2-w/2,34,w,30,1); text_c(toast_msg,W/2,54,0x000000); }
     XCopyArea(dpy,backbuf,shell_win,gc,0,0,W,H,0,0); XFlush(dpy);
 }
 
 /* ───────────────────────── ввод ───────────────────────── */
 static void hit_click(int x,int y){
+    static int last_item=-1; static double last_when;
     for(int i=nhits-1;i>=0;i--){ Hit *h=&hits[i]; if(x>=h->x&&x<h->x+h->w&&y>=h->y&&y<h->y+h->h){
         switch(h->action){
-            case ACT_CAT: cat_idx=h->arg; item_idx=0; if(mode==MODE_DC) mode=MODE_XMB; break;
-            case ACT_ITEM: item_idx=h->arg; open_app_idx(h->arg); break;
-            case ACT_DC_ORBIT: cat_idx=h->arg; do_select(); break;
-            case ACT_SETTING: { static const int hues[6]={222,265,190,330,150,20};
-                if(h->arg<6) cfg_hue=hues[h->arg]; else if(h->arg<13) cfg_swirl=h->arg-10;
-                else if(h->arg==20) cfg_anim=!cfg_anim; else if(h->arg==21) cfg_fps_battery_save=!cfg_fps_battery_save; else if(h->arg==22) cfg_dc_default=!cfg_dc_default;
-                config_save(); toast_set("Настройки сохранены"); break; }
+            case ACT_ITEM: { double nw=now_sec();
+                if (item_idx==h->arg && last_item==h->arg && nw-last_when<0.45) open_app_idx(h->arg);
+                item_idx=h->arg; last_item=h->arg; last_when=nw; break; }
+            case ACT_MENU: menu_open=!menu_open; break;
+            case ACT_MENUITEM: menu_open=0; open_app_idx(h->arg); break;
+            case ACT_CLOSEWIN: do_back(); break;
+            case ACT_SETTING:
+                if(h->arg<3) cfg_desk=h->arg;
+                else if(h->arg==20) cfg_anim=!cfg_anim; else if(h->arg==21) cfg_fps_battery_save=!cfg_fps_battery_save;
+                config_save(); toast_set("Настройки сохранены"); break;
             case ACT_TRACK: music_track = (music_track==h->arg? -1:h->arg); music_t0=now_sec(); break;
             case ACT_STORE: if(store_progress[h->arg]==0) store_progress[h->arg]=1; break;
-            case ACT_TILE: if(open_app>=0&&!strcmp(APPS[open_app].title,"Пузыри")){
-                    for(int j=0;j<10;j++) if(bubbles[j].alive && hypot(x-bubbles[j].x,y-bubbles[j].y)<bubbles[j].r+8){ bubbles[j].alive=0; bubble_score++;
-                        if(bubble_score>=10){ toast_set("10 сфер! Трофей «Ловец сфер»"); voice_feedback("Победа"); bubble_score=0; for(int k=0;k<10;k++){bubbles[k].alive=1; bubbles[k].x=80+rand()%(W-240); bubbles[k].y=140+rand()%(H-300);} }
-                        else { bubbles[j].alive=1; bubbles[j].x=80+rand()%(W>240?W-240:200); bubbles[j].y=140+rand()%(H>300?H-300:200); } break; }
-                } break;
         } return; } }
-    if (mode==MODE_BOOT) mode=cfg_dc_default?MODE_DC:MODE_XMB;
+    menu_open=0;
+    if (mode==MODE_BOOT) mode=MODE_DESKTOP;
 }
 static void key_press(XEvent *ev){
     char buf[64]; KeySym ks; XComposeStatus cs; int len=XLookupString(&ev->xkey,buf,sizeof buf,&ks,&cs); (void)len;
@@ -627,27 +508,10 @@ static void key_press(XEvent *ev){
         case XK_Return: case XK_KP_Enter: do_select(); break;
         case XK_Left: do_move(-1,0); break; case XK_Right: do_move(1,0); break;
         case XK_Up: do_move(0,-1); break; case XK_Down: do_move(0,1); break;
-        case XK_F1: case XK_Tab: mode = (mode==MODE_DC?MODE_XMB:MODE_DC); break;
         case XK_v: case XK_V: toast_set("Голос: говорите… (демон xross-voiced)"); break;
         default: break;
     }
 }
-#ifdef __linux__
-static int joy_fd=-1;
-static void joy_poll(void){
-    if (joy_fd<0) return; struct js_event e;
-    while (read(joy_fd,&e,sizeof e)==(ssize_t)sizeof e){
-        if ((e.type&JS_EVENT_BUTTON)&&e.value){ /* типичный XInput/DualShock порядок */
-            if(e.number==0) do_select(); else if(e.number==1) do_back();
-            else if(e.number==4) do_move(-1,0); else if(e.number==5) do_move(1,0);
-            /* кнопка Guide/PS (8), Start (9): выход из внешнего приложения домой */
-            else if(e.number==8||e.number==9||e.number==16){ if(client_win!=None||child_pid>0) close_client(); else mode=cfg_dc_default?MODE_DC:MODE_XMB; } }
-        else if ((e.type&JS_EVENT_AXIS)&&abs(e.value)>16000){
-            if(e.number==6) do_move(e.value>0?1:-1,0); if(e.number==7) do_move(0,e.value>0?1:-1); }
-    }
-}
-#endif
-
 /* ───────────────────────── главный цикл ───────────────────────── */
 static void usage(FILE *f){ fprintf(f,"XrossOS shell %s (%s) — C/Xlib оболочка для X11/XLibre\nИспользование: xross [--version] [--help]  (нужен DISPLAY)\nОптимизация по умолчанию: ASUS X550EA, %dx%d, %d/%d FPS\n",XROSS_VERSION,XROSS_CODENAME,X550EA_WIDTH,X550EA_HEIGHT,FPS_AC,FPS_BATTERY); }
 
@@ -672,11 +536,6 @@ int main(int argc,char **argv){
     XStoreName(dpy,shell_win,"XrossOS");
     XSelectInput(dpy,shell_win,ExposureMask|KeyPressMask|ButtonPressMask|PointerMotionMask|StructureNotifyMask);
     XMapRaised(dpy,shell_win);
-    /* плавающая кнопка выхода поверх внешних приложений (правый верх) */
-    { XSetWindowAttributes ea; ea.override_redirect=True; ea.background_pixel=px(0xb00020);
-      exit_win=XCreateWindow(dpy,root_win,W-140,8,132,34,0,CopyFromParent,InputOutput,CopyFromParent,CWOverrideRedirect|CWBackPixel,&ea);
-      XStoreName(dpy,exit_win,"XrossExit");
-      XSelectInput(dpy,exit_win,ButtonPressMask|ExposureMask); }
     /* WM-функция: перехватываем появление чужих окон ПОСЛЕ показа своего */
     XSelectInput(dpy,root_win,SubstructureRedirectMask|SubstructureNotifyMask|KeyPressMask);
     /* Выход из ЛЮБОГО внешнего приложения: Ctrl+Esc, Home (аналог кнопки PS),
@@ -691,9 +550,6 @@ int main(int argc,char **argv){
     boot_t0=now_sec();
 
     mkfifo(VOICE_FIFO_PATH,0666); voice_fd=open(VOICE_FIFO_PATH,O_RDONLY|O_NONBLOCK);
-#ifdef __linux__
-    joy_fd=open("/dev/input/js0",O_RDONLY|O_NONBLOCK);
-#endif
     int xfd=ConnectionNumber(dpy);
     double last_battery_check=0; (void)last_battery_check;
 
@@ -703,11 +559,23 @@ int main(int argc,char **argv){
         while (XPending(dpy)){
             XEvent ev; XNextEvent(dpy,&ev);
             switch(ev.type){
-                case Expose: if (ev.xexpose.window==exit_win) draw_exit_button(); break;
+                case Expose: if (ev.xexpose.window==frame_win) draw_frame(); break;
                 case ConfigureNotify: if(ev.xconfigure.window==shell_win){ W=ev.xconfigure.width; H=ev.xconfigure.height; XFreePixmap(dpy,backbuf); backbuf=XCreatePixmap(dpy,root_win,W,H,DefaultDepth(dpy,screen_no)); if(bg_cache){XFreePixmap(dpy,bg_cache); bg_cache=None;} } break;
                 case ButtonPress:
-                    if (ev.xbutton.window==exit_win){ close_client(); break; }
-                    hit_click(ev.xbutton.x,ev.xbutton.y); break;
+                    if (ev.xbutton.window==frame_win){
+                        int bx=ev.xbutton.x, by=ev.xbutton.y;
+                        if (by>=3 && by<=19 && bx>=14 && bx<=34){ close_client(); break; }
+                        if (by>=3 && by<=19 && bx>=fw-34){ /* развернуть/восстановить */
+                            if (!client_max){ save_x=fx; save_y=fy; save_w=fw; save_h=fh; fx=0; fy=24; fw=W; fh=H-50; client_max=1; }
+                            else { fx=save_x; fy=save_y; fw=save_w; fh=save_h; client_max=0; }
+                            frame_apply(); break; }
+                        if (by<TB && !client_max){ drag_on=1; drag_dx=ev.xbutton.x_root-fx; drag_dy=ev.xbutton.y_root-fy; }
+                        break; }
+                    hit_click(ev.xbutton.x, ev.xbutton.y); break;
+                case ButtonRelease: drag_on=0; break;
+                case MotionNotify:
+                    if (drag_on && ev.xmotion.window==frame_win){ fx=ev.xmotion.x_root-drag_dx; fy=ev.xmotion.y_root-drag_dy; if(fy<24)fy=24; frame_apply(); }
+                    break;
                 case KeyPress: { KeySym ks0=XLookupKeysym(&ev.xkey,0);
                     int exit_key = ks0==XK_Home || ks0==XK_Super_L || ks0==XK_F9 ||
                                    ((ev.xkey.state&ControlMask) && ks0==XK_Escape);
@@ -715,34 +583,50 @@ int main(int argc,char **argv){
                     if (exit_key && mode==MODE_APP){ do_back(); break; }
                     key_press(&ev); break; }
                 case MapRequest: { Window w=ev.xmaprequest.window;
-                    if (w==exit_win){ XMapWindow(dpy,w); break; }
-                    if (w!=shell_win){ XSelectInput(dpy,w,StructureNotifyMask); XSetWindowBorderWidth(dpy,w,0);
-                        XMoveResizeWindow(dpy,w,0,0,W,H); /* ПРИНУДИТЕЛЬНО весь экран */
-                        XMapWindow(dpy,w); XSetInputFocus(dpy,w,RevertToParent,CurrentTime); client_win=w; sync_exit_button(); }
+                    if (w==frame_win){ XMapWindow(dpy,w); break; }
+                    if (w!=shell_win){
+                        client_win=w;
+                        fw=W*72/100; fh=H*72/100; fx=(W-fw)/2; fy=40; client_max=0;
+                        XSetWindowAttributes fa; fa.override_redirect=True; fa.background_pixel=px(0xdddddd);
+                        frame_win=XCreateWindow(dpy,root_win,fx,fy,fw,fh,1,CopyFromParent,InputOutput,CopyFromParent,CWOverrideRedirect|CWBackPixel,&fa);
+                        XStoreName(dpy,frame_win,"XrossWindow");
+                        XSelectInput(dpy,frame_win,ExposureMask|ButtonPressMask|ButtonReleaseMask|PointerMotionMask);
+                        XSelectInput(dpy,w,StructureNotifyMask);
+                        XSetWindowBorderWidth(dpy,w,0);
+                        XReparentWindow(dpy,w,frame_win,1,TB);
+                        frame_apply();
+                        XMapWindow(dpy,frame_win); XMapWindow(dpy,w);
+                        XRaiseWindow(dpy,frame_win);
+                        XSetInputFocus(dpy,w,RevertToParent,CurrentTime);
+                    }
                     else XMapWindow(dpy,w);
                     break; }
-                case ConfigureRequest: { XWindowChanges wc; wc.x=0; wc.y=0; wc.width=W; wc.height=H; wc.border_width=0;
-                    XConfigureWindow(dpy,ev.xconfigurerequest.window,CWX|CWY|CWWidth|CWHeight|CWBorderWidth,&wc); break; }
-                case UnmapNotify: case DestroyNotify:
-                    if (ev.xany.window==client_win || (ev.type==DestroyNotify && ev.xdestroywindow.window==client_win)){
-                        client_win=None; child_pid=-1; XMapRaised(dpy,shell_win); if(mode==MODE_APP) mode=MODE_XMB; }
+                case ConfigureRequest: { XWindowChanges wc; wc.border_width=0;
+                    if (ev.xconfigurerequest.window==client_win && frame_win){
+                        fw=ev.xconfigurerequest.width+2; fh=ev.xconfigurerequest.height+TB+2;
+                        if (fw<240) fw=240; if (fh<160) fh=160; frame_apply();
+                    } else {
+                        wc.x=ev.xconfigurerequest.x; wc.y=ev.xconfigurerequest.y;
+                        wc.width=ev.xconfigurerequest.width; wc.height=ev.xconfigurerequest.height;
+                        XConfigureWindow(dpy,ev.xconfigurerequest.window,CWX|CWY|CWWidth|CWHeight|CWBorderWidth,&wc);
+                    } break; }
+                case DestroyNotify:
+                    if (ev.xdestroywindow.window==client_win){
+                        client_win=None; child_pid=-1;
+                        if (frame_win){ XDestroyWindow(dpy,frame_win); frame_win=None; }
+                        client_max=0; drag_on=0; XMapRaised(dpy,shell_win); XSetInputFocus(dpy,shell_win,RevertToParent,CurrentTime);
+                        if(mode==MODE_APP) mode=MODE_DESKTOP; }
                     break;
                 default: break;
             }
         }
         /* внешний процесс умер, а окна не создал (нет бинарника) — вернуть оболочку */
         if (child_pid>0 && client_win==None){ if (kill(child_pid,0)<0 && errno==ESRCH){ child_pid=-1; XMapRaised(dpy,shell_win); toast_set("Приложение закрылось или не запустилось (см. /var/log/xross.log)"); } }
-        sync_exit_button();
         voice_poll();
-#ifdef __linux__
-        joy_poll();
-#endif
-        /* сглаживание XMB (отключаемо для слабого железа) */
         double k = cfg_anim? 0.22 : 1.0;
-        anim_cat += (cat_idx-anim_cat)*k; anim_item += (item_idx-anim_item)*k;
-        if (fabs(cat_idx-anim_cat)<0.001) anim_cat=cat_idx; if (fabs(item_idx-anim_item)<0.001) anim_item=item_idx;
+        anim_item += (item_idx-anim_item)*k; if (fabs(item_idx-anim_item)<0.001) anim_item=item_idx; (void)anim_item;
         double t=frame_start;
-        if (client_win==None) draw(t); /* пока клиент на экране — не тратим CPU Jaguar на фон */
+        draw(t);
         frame_no++;
         double budget=1.0/target_fps(); double spent=now_sec()-frame_start;
         if (spent<budget){ struct timespec ts={0,(long)((budget-spent)*1e9)}; /* select вместо sleep: не проспим события */
