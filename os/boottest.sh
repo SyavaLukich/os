@@ -40,7 +40,7 @@ while [ $i -lt 120 ]; do
     if grep -qi "NOT found" boottest-ocr.txt; then
         echo "::error title=BOOTTEST::аварийная консоль (rootfs не найден)"; break
     fi
-    if grep -qiE "XrossOS|Dreamcast|Ctrl\+Esc|Home" boottest-ocr.txt; then found=1; ann BOOTTEST "OK - XrossOS GUI за ~$(( $(date +%s) - T0 )) c (poll $i)"; break; fi
+    if grep -qiE "XrossOS|Firefox|xterm" boottest-ocr.txt; then found=1; ann BOOTTEST "OK - XrossOS GUI за ~$(( $(date +%s) - T0 )) c (poll $i)"; break; fi
 done
 # Фаза 2 (BOOTTEST_APPS=1): запуск Firefox с рабочего стола клавишами, как пользователь.
 # Приветствие само закроется за 2.2 с: Esc (без вреда) + пауза, затем
