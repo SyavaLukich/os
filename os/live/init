@@ -87,6 +87,8 @@ while true; do
     su - player -c /usr/bin/xross-session >>/var/log/xross.log 2>&1
     echo "XROSS stage2: X session exited rc=$?, last log lines:"
     tail -n 40 /var/log/xross.log 2>/dev/null
+    echo "XROSS stage2: /var/log/Xorg.0.log (tail):"
+    tail -n 60 /var/log/Xorg.0.log 2>/dev/null
     echo "XROSS stage2: restart in 5s"
     sleep 5
 done
