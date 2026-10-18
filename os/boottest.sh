@@ -43,10 +43,10 @@ while [ $i -lt 120 ]; do
     if grep -qiE "XrossOS|Dreamcast/XMB" boottest-ocr.txt; then found=1; ann BOOTTEST "OK - XrossOS GUI за ~$(( $(date +%s) - T0 )) c (poll $i)"; break; fi
 done
 # Фаза 2 (BOOTTEST_APPS=1): запуск Firefox из XMB клавишами, как пользователь.
-# Экран загрузки: Enter -> XMB; 3x Right -> категория Сеть; Enter -> Firefox.
+# Экран загрузки: Enter -> главный экран Vita; Down,Down,Right -> пузырь Firefox; Enter.
 if [ -n "$found" ] && [ "${BOOTTEST_APPS:-0}" = "1" ]; then
-    ann APPTEST "launch Firefox: Enter, Right x3, Enter"
-    for k in ret right right right ret; do
+    ann APPTEST "launch Firefox: Enter, Down x2, Right, Enter (Vita grid)"
+    for k in ret down down right ret; do
         printf 'sendkey %s\n' "$k" | socat - UNIX-CONNECT:/tmp/xross-mon >/dev/null 2>&1 || true
         sleep 2
     done

@@ -49,7 +49,8 @@ enum { APP_NONE = -1 };
 /* action-коды хитбоксов */
 enum { ACT_CAT, ACT_ITEM, ACT_SETTING, ACT_TILE, ACT_TRACK, ACT_STORE, ACT_DC_ORBIT, ACT_CLOSE };
 
-static Display *dpy; static Window root_win, shell_win; static Pixmap backbuf;
+static Display *dpy; static Window root_win, shell_win, exit_win; static Pixmap backbuf;
+static int exit_visible;
 static GC gc; static XFontSet fontset; static XFontStruct *fixedfont;
 static int W, H, screen_no;
 static Colormap cmap;
@@ -132,13 +133,38 @@ static int text_w(const char *s){
 static void text_c(const char *s,int cx,int y,unsigned rgb){ text(s,cx-text_w(s)/2,y,rgb); }
 static void add_hit(int x,int y,int w,int h,int action,int arg){ if(nhits<128) hits[nhits++]=(Hit){x,y,w,h,action,arg}; }
 
-/* сфера-иконка: PS Vita + Dreamcast (блик сверху-слева) */
+/* сфера-иконка (совместимость: меню Dreamcast) */
 static void sphere(int cx,int cy,int r,unsigned rgb,int focused){
     fill_circle(cx,cy,r, blend(rgb,0x000000,0.25));
     fill_circle(cx,cy,r-2, rgb);
     fill_circle(cx-r/3,cy-r/3,r/3, blend(rgb,0xffffff,0.55));
     fill_circle(cx-r/4,cy-r/4,r/6, blend(rgb,0xffffff,0.8));
     if (focused) draw_circle(cx,cy,r+5,0xffffff,2);
+}
+
+/* 3D-пузырь PS Vita LiveArea: тень, объёмный градиент концентрическими
+ * кругами со смещением к источнику света, блик и нижний рефлекс.
+ * Только ядро X11 (без XRender/альфы) — дёшево даже на Jaguar. */
+static void sphere3d(int cx,int cy,int r,unsigned rgb,int focused,double pulse){
+    /* мягкая тень под пузырём */
+    fg(blend(0x05070f,0x000000,0.4));
+    XFillArc(dpy,backbuf,gc,cx-r,cy+r*62/100,r*2,r*46/100,0,360*64);
+    int rr = focused ? (int)(r*(1.10+0.04*pulse)) : r;
+    /* объём: от тёмного низа к светлому верху-леву */
+    for (int k=10;k>=1;k--){
+        int rad = rr*k/10;
+        int ox = cx - rr*22/100*k/10, oy = cy - rr*26/100*k/10;
+        double lt = (10-k)/10.0;
+        unsigned c = blend(blend(rgb,0x000000,0.30), blend(rgb,0xffffff,0.38), lt);
+        fill_circle(ox,oy,rad,c);
+    }
+    /* блик-«стекло» сверху-слева и рефлекс снизу */
+    fill_circle(cx-rr*38/100,cy-rr*44/100,rr*26/100, blend(rgb,0xffffff,0.78));
+    fill_circle(cx-rr*42/100,cy-rr*50/100,rr*13/100, 0xffffff);
+    fg(blend(rgb,0xffffff,0.28));
+    XDrawArc(dpy,backbuf,gc,cx-rr*62/100,cy+rr*28/100,rr*124/100,rr*56/100,200*64,140*64);
+    draw_circle(cx,cy,rr, blend(rgb,0xffffff,0.35), 1);
+    if (focused){ draw_circle(cx,cy,rr+6,0xffffff,2); draw_circle(cx,cy,rr+11,blend(rgb,0xffffff,0.45),1); }
 }
 
 /* Dreamcast-свёрл: логарифмическая спираль полилинией */
@@ -178,7 +204,6 @@ static int snake_pts, snake_dir[2], snake_xy[64][2], snake_len, snake_food[2]; s
 static char notes_buf[4096]; static int music_track=-1; static double music_t0;
 static int store_progress[4];
 
-static int apps_in_cat(int c){ int n=0; for(int i=0;i<NAPPS;i++) if(!strcmp(APPS[i].cat,CATS[c][0])) n++; return n; }
 static int app_index(int c,int nth){ for(int i=0;i<NAPPS;i++) if(!strcmp(APPS[i].cat,CATS[c][0]) && nth--==0) return i; return -1; }
 
 static void notes_load(void){ char p[512]; path_home(p,sizeof p,NOTES_PATH); FILE *f=fopen(p,"r"); if(f){ size_t n=fread(notes_buf,1,sizeof notes_buf-1,f); notes_buf[n]=0; fclose(f);} }
@@ -203,7 +228,7 @@ static void launch_external(const char *cmdline, const char *title){
         fprintf(stderr,"xross: not installed: %s (%s)\n",title,cmdline);
         return;
     }
-    toast_set("Запуск на весь экран…");
+    toast_set("Запуск на весь экран… выход: Home / Ctrl+Esc / кнопка ВЫХОД");
     pid_t pid=fork();
     if (pid==0){ setsid();
         /* через sh -c: раскрываются ~, переменные и кавычки в командах реестра */
@@ -212,10 +237,38 @@ static void launch_external(const char *cmdline, const char *title){
     XUnmapWindow(dpy,shell_win); XFlush(dpy);
     /* смерть ребёнка ловит главный цикл по kill(pid,0): при SIG_IGN waitpid не работает */
 }
+static void terminate_child(void){
+    if (child_pid>0){
+        /* приложение запущено через setsid: гасим всю группу процессов,
+         * иначе за Firefox/xterm останутся висеть дочерние процессы */
+        if (kill(-child_pid,SIGTERM)<0) kill(child_pid,SIGTERM);
+        child_pid=-1;
+    }
+}
 static void close_client(void){
     if (client_win!=None){ XKillClient(dpy,client_win); client_win=None; }
-    if (child_pid>0){ kill(child_pid,SIGTERM); }
-    XMapRaised(dpy,shell_win); mode = cfg_dc_default?MODE_DC:MODE_XMB; open_app=APP_NONE;
+    terminate_child();
+    if (exit_win && exit_visible){ XUnmapWindow(dpy,exit_win); exit_visible=0; }
+    XMapRaised(dpy,shell_win); XSetInputFocus(dpy,shell_win,RevertToParent,CurrentTime);
+    mode = cfg_dc_default?MODE_DC:MODE_XMB; open_app=APP_NONE;
+    toast_set("Приложение закрыто");
+}
+/* плавающая кнопка «Выход» поверх внешнего приложения + её отрисовка */
+static void draw_exit_button(void){
+    if (!exit_win) return;
+    fg(0xb00020); XFillRectangle(dpy,exit_win,gc,0,0,132,34);
+    fg(0xffffff);
+    const char *t="X  ВЫХОД";
+    if (fontset) Xutf8DrawString(dpy,exit_win,fontset,gc,26,23,t,strlen(t));
+    else XDrawString(dpy,exit_win,gc,26,23,t,strlen(t));
+    fg(0xffffff); XFillArc(dpy,exit_win,gc,6,10,14,14,0,360*64);
+    fg(0xb00020); XFillArc(dpy,exit_win,gc,8,12,10,10,0,360*64);
+}
+static void sync_exit_button(void){
+    if (!exit_win) return;
+    int want = (client_win!=None || child_pid>0);
+    if (want && !exit_visible){ XMapRaised(dpy,exit_win); exit_visible=1; draw_exit_button(); XFlush(dpy); }
+    else if (!want && exit_visible){ XUnmapWindow(dpy,exit_win); exit_visible=0; }
 }
 
 static void open_app_idx(int ai){
@@ -263,19 +316,22 @@ static void voice_poll(void){
 }
 
 /* ───────────────────────── навигация ───────────────────────── */
+#define GRID_COLS 5
 static void do_move(int dc,int di){
     if (mode==MODE_APP){ if(open_app>=0&&!strcmp(APPS[open_app].title,"Змейка")){ if(dc){snake_dir[0]=dc;snake_dir[1]=0;} if(di){snake_dir[0]=0;snake_dir[1]=di;} } return; }
     if (mode==MODE_DC){ if(dc) cat_idx=(cat_idx+dc+NCATS)%NCATS; return; }
     if (mode!=MODE_XMB) { mode=MODE_XMB; return; }
-    if (dc){ cat_idx=(cat_idx+dc+NCATS)%NCATS; item_idx=0; }
-    if (di){ int n=apps_in_cat(cat_idx); if(n) item_idx=(item_idx+di+n)%n; }
+    /* сетка пузырей PS Vita: ←→ по строке, ↑↓ между строками */
+    if (dc) item_idx=(item_idx+dc+NAPPS)%NAPPS;
+    if (di) item_idx=(item_idx+di*GRID_COLS+NAPPS)%NAPPS;
 }
 static void do_select(void){
     if (mode==MODE_BOOT){ mode=cfg_dc_default?MODE_DC:MODE_XMB; return; }
     if (mode==MODE_DC){ /* орбита Dreamcast: 4 сферы = Играть/Файлы/Музыка/Настройки */
         static const char *orbit_cat[4]={"game","apps","music","settings"};
-        for(int i=0;i<NCATS;i++) if(!strcmp(CATS[i][0],orbit_cat[cat_idx%4])){ cat_idx=i; break; } item_idx=0; mode=MODE_XMB; return; }
-    if (mode==MODE_XMB) open_app_idx(app_index(cat_idx,item_idx));
+        for(int i=0;i<NCATS;i++) if(!strcmp(CATS[i][0],orbit_cat[cat_idx%4])){ cat_idx=i; break; }
+        int f=app_index(cat_idx,0); if(f>=0) item_idx=f; mode=MODE_XMB; return; }
+    if (mode==MODE_XMB) open_app_idx(item_idx);
 }
 static void do_back(void){
     if (mode==MODE_APP){ open_app=APP_NONE; mode=cfg_dc_default?MODE_DC:MODE_XMB; if(music_track>=0) music_track=-1; notes_save(); return; }
@@ -326,41 +382,47 @@ static void draw_boot(double t){
     if (t>3.2) mode=cfg_dc_default?MODE_DC:MODE_XMB;
 }
 
-static void draw_xmb(double t){
+static void draw_vita_home(double t){
     render_bg();
-    /* волна PS3: 3 полилинии, шаг 8px (на 1366 — ~170 точек) */
-    for(int layer=0;layer<3;layer++){
-        XPoint pts[220]; int n=0; double amp=34+layer*16, yb=H*0.44+layer*14;
-        for(int x=0;x<=W&&n<220;x+=8){ double y=yb+sin(x/300.0+t*(0.9-layer*0.18))*amp+sin(x/170.0-t*0.6)*amp*0.4; pts[n++]=(XPoint){(short)x,(short)y}; }
-        fg(hue_rgb(cfg_hue+layer*30,.62-layer*.08,.9)); XSetLineAttributes(dpy,gc,layer==0?2:2+layer*2,LineSolid,CapRound,JoinRound); XDrawLines(dpy,backbuf,gc,pts,n,CoordModeOrigin);
+    /* «волны» PS Vita на фоне + парящие пузырьки */
+    for(int layer=0;layer<2;layer++){
+        XPoint pts[220]; int n=0; double yb=H*0.30+layer*H*0.24;
+        for(int x=0;x<=W&&n<220;x+=10){ double y=yb+sin(x/260.0+t*0.5+layer*2.0)*26+sin(x/130.0-t*0.35)*10; pts[n++]=(XPoint){(short)x,(short)y}; }
+        fg(blend(hue_rgb(cfg_hue+layer*40,.62,.8),0xffffff,0.12)); XSetLineAttributes(dpy,gc,3,LineSolid,CapRound,JoinRound);
+        XDrawLines(dpy,backbuf,gc,pts,n,CoordModeOrigin);
     }
-    draw_swirl(W-120,92,42,t*0.25,SWIRL_RGB[cfg_swirl],3); /* маленький свёрл Dreamcast в углу */
+    for(int i=0;i<14;i++){ int x=(i*197)%(W-40)+20, y=70+(i*131)%(H-190); fill_circle(x,y+(int)(sin(t*0.9+i)*7),3,blend(hue_rgb(cfg_hue+i*24,.7,.7),0xffffff,.45)); }
     nhits=0;
-    /* категории: фокус всегда в центре (как PS3) */
-    for(int i=0;i<NCATS;i++){
-        double d=i-anim_cat; if (fabs(d)>4.2) continue;
-        int cx=W/2+(int)(d*148), cy=(int)(H*0.34), r=(int)(44-fabs(d)*7); if(r<18)r=18;
-        unsigned col=hue_rgb(cfg_hue+i*36,.58,.75);
-        sphere(cx,cy,r,col,fabs(d)<0.5);
-        char g[2]={CATS[i][1][0],0}; /* первая буква (для кириллицы ненадёжно) — используем индексную метку ниже */
-        (void)g;
-        if (fabs(d)<0.5) text_c(CATS[i][1],cx,cy+r+26,0xffffff);
-        else { char lb[64]; snprintf(lb,sizeof lb,"%s",CATS[i][1]); text_c(lb,cx,cy+r+22,blend(col,0xffffff,.3)); }
-        add_hit(cx-64,cy-64,128,128,ACT_CAT,i);
+    /* сетка пузырей LiveArea */
+    int cols=GRID_COLS, rows=(NAPPS+cols-1)/cols;
+    int cellw=W/cols, cellh=(H-210)/rows; if(cellh>132) cellh=132;
+    int y0=104;
+    double pulse=0.5+0.5*sin(t*3.2);
+    for(int i=0;i<NAPPS;i++){
+        int col=i%cols, row=i/cols;
+        int cx=cellw*col+cellw/2, cy=y0+cellh*row+cellh/2 + (int)(sin(t*1.4+i*0.7)*3);
+        int focused=(i==item_idx);
+        int r=cellh*36/100; if(r>46) r=46; if(r<26) r=26;
+        sphere3d(cx,cy,r,APPS[i].rgb,focused,pulse);
+        /* глиф приложения по центру пузыря */
+        if (APPS[i].glyph) text_c(APPS[i].glyph,cx,cy+7,0xffffff);
+        if (focused){
+            /* подпись выбранного пузыря — как в LiveArea */
+            text_c(APPS[i].title,cx,cy+r+24,0xffffff);
+        }
+        add_hit(cx-cellw/2+6,cy-cellh/2+4,cellw-12,cellh-8,ACT_ITEM,i);
     }
-    /* вертикальный список */
-    int n=apps_in_cat(cat_idx);
-    for(int i=0;i<n;i++){
-        double d=i-anim_item; if (fabs(d)>4.5) continue;
-        int ai=app_index(cat_idx,i); int y=(int)(H*0.52+d*64); int x=W/2-230+(int)(fabs(d)*10);
-        int focused=fabs(d)<0.5;
-        if (focused) fill_rect(x-14,y-34,480,56,0x1b2742);
-        sphere(x+10,y-8,(focused?24:19),APPS[ai].rgb,focused);
-        text(APPS[ai].title,x+48,y,focused?0xffffff:0xc8d2e0);
-        text(APPS[ai].sub,x+48,y+20,0x8fa0b8);
-        add_hit(x-14,y-34,480,56,ACT_ITEM,i);
-    }
-    (void)n;
+    /* карточка выбранного приложения внизу + точки страниц */
+    int panel_y=H-118; if(panel_y<y0+cellh*rows+8) panel_y=y0+cellh*rows+8;
+    fill_rect(28,panel_y,W-56,64,0x101a30);
+    draw_circle(66,panel_y+32,17,blend(APPS[item_idx].rgb,0xffffff,.3),2);
+    fill_circle(66,panel_y+32,14,APPS[item_idx].rgb);
+    if (APPS[item_idx].glyph) text_c(APPS[item_idx].glyph,66,panel_y+39,0xffffff);
+    text(APPS[item_idx].title,96,panel_y+30,0xffffff);
+    text(APPS[item_idx].sub,96,panel_y+52,0x8fa0b8);
+    text(APPS[item_idx].ext?"Внешнее · на весь экран · выход — Home / Ctrl+Esc / кнопка ВЫХОД":"Встроенное приложение · Esc — назад",W/2+60,panel_y+30,0xa7f3d0);
+    int pages=rows, cur=item_idx/cols;
+    for(int i=0;i<pages;i++) fill_circle(W/2+(i-(pages-1)*0.5)*16,panel_y+84, i==cur?5:3, i==cur?0xffffff:0x5a6c8c);
 }
 
 static void draw_dc(double t){
@@ -383,7 +445,7 @@ static void card(int x,int y,int w,int h,const char *title){
 static void draw_app(double t){
     fill_rect(0,0,W,H,0x0a1122);
     const AppDef *a=&APPS[open_app];
-    text(a->title,28,42,0xffffff); text("Esc — назад",W-150,42,0x8fa0b8);
+    text(a->title,28,42,0xffffff); text("Esc/Home — назад",W-190,42,0x8fa0b8);
     int y=76;
     if (!strcmp(a->title,"Настройки системы")){
         static const int hues[6]={222,265,190,330,150,20};
@@ -461,10 +523,10 @@ static void draw(double t){
     if (mode==MODE_BOOT) draw_boot(t-boot_t0);
     else if (mode==MODE_DC) draw_dc(t);
     else if (mode==MODE_APP && open_app>=0) draw_app(t);
-    else draw_xmb(t);
+    else draw_vita_home(t);
     draw_topbar();
     if (now_sec()<toast_until){ int w=text_w(toast_msg)+36; fill_rect(W/2-w/2,58,w,34,0x0b1020); text_c(toast_msg,W/2,80,0xffffff); }
-    if (mode!=MODE_BOOT) text("←→↑↓ Enter Esc · F1 Dreamcast/XMB · V голос · геймпад js0",18,H-14,0x9fb2cc);
+    if (mode!=MODE_BOOT) text("Стрелки+Enter · выход из приложений: Home / Ctrl+Esc / кнопка ВЫХОД · F1 Dreamcast · V голос",18,H-14,0x9fb2cc);
     XCopyArea(dpy,backbuf,shell_win,gc,0,0,W,H,0,0); XFlush(dpy);
 }
 
@@ -473,7 +535,7 @@ static void hit_click(int x,int y){
     for(int i=nhits-1;i>=0;i--){ Hit *h=&hits[i]; if(x>=h->x&&x<h->x+h->w&&y>=h->y&&y<h->y+h->h){
         switch(h->action){
             case ACT_CAT: cat_idx=h->arg; item_idx=0; if(mode==MODE_DC) mode=MODE_XMB; break;
-            case ACT_ITEM: item_idx=h->arg; open_app_idx(app_index(cat_idx,item_idx)); break;
+            case ACT_ITEM: item_idx=h->arg; open_app_idx(h->arg); break;
             case ACT_DC_ORBIT: cat_idx=h->arg; do_select(); break;
             case ACT_SETTING: { static const int hues[6]={222,265,190,330,150,20};
                 if(h->arg<6) cfg_hue=hues[h->arg]; else if(h->arg<13) cfg_swirl=h->arg-10;
@@ -515,7 +577,8 @@ static void joy_poll(void){
         if ((e.type&JS_EVENT_BUTTON)&&e.value){ /* типичный XInput/DualShock порядок */
             if(e.number==0) do_select(); else if(e.number==1) do_back();
             else if(e.number==4) do_move(-1,0); else if(e.number==5) do_move(1,0);
-            else if(e.number==9||e.number==16){ if(client_win) close_client(); else mode=cfg_dc_default?MODE_DC:MODE_XMB; } }
+            /* кнопка Guide/PS (8), Start (9): выход из внешнего приложения домой */
+            else if(e.number==8||e.number==9||e.number==16){ if(client_win!=None||child_pid>0) close_client(); else mode=cfg_dc_default?MODE_DC:MODE_XMB; } }
         else if ((e.type&JS_EVENT_AXIS)&&abs(e.value)>16000){
             if(e.number==6) do_move(e.value>0?1:-1,0); if(e.number==7) do_move(0,e.value>0?1:-1); }
     }
@@ -546,11 +609,19 @@ int main(int argc,char **argv){
     XStoreName(dpy,shell_win,"XrossOS");
     XSelectInput(dpy,shell_win,ExposureMask|KeyPressMask|ButtonPressMask|PointerMotionMask|StructureNotifyMask);
     XMapRaised(dpy,shell_win);
+    /* плавающая кнопка выхода поверх внешних приложений (правый верх) */
+    { XSetWindowAttributes ea; ea.override_redirect=True; ea.background_pixel=px(0xb00020);
+      exit_win=XCreateWindow(dpy,root_win,W-140,8,132,34,0,CopyFromParent,InputOutput,CopyFromParent,CWOverrideRedirect|CWBackPixel,&ea);
+      XStoreName(dpy,exit_win,"XrossExit");
+      XSelectInput(dpy,exit_win,ButtonPressMask|ExposureMask); }
     /* WM-функция: перехватываем появление чужих окон ПОСЛЕ показа своего */
-    XSelectInput(dpy,root_win,SubstructureRedirectMask|SubstructureNotifyMask);
-    /* Ctrl+Esc и Home возвращают из внешнего приложения в оболочку */
+    XSelectInput(dpy,root_win,SubstructureRedirectMask|SubstructureNotifyMask|KeyPressMask);
+    /* Выход из ЛЮБОГО внешнего приложения: Ctrl+Esc, Home (аналог кнопки PS),
+     * Super и F9 — глобальные захваты, работают при любом фокусе */
     XGrabKey(dpy,XKeysymToKeycode(dpy,XK_Escape),ControlMask,root_win,True,GrabModeAsync,GrabModeAsync);
     XGrabKey(dpy,XKeysymToKeycode(dpy,XK_Home),AnyModifier,root_win,True,GrabModeAsync,GrabModeAsync);
+    XGrabKey(dpy,XKeysymToKeycode(dpy,XK_Super_L),AnyModifier,root_win,True,GrabModeAsync,GrabModeAsync);
+    XGrabKey(dpy,XKeysymToKeycode(dpy,XK_F9),AnyModifier,root_win,True,GrabModeAsync,GrabModeAsync);
 
     gc=XCreateGC(dpy,shell_win,0,NULL);
     backbuf=XCreatePixmap(dpy,root_win,W,H,DefaultDepth(dpy,screen_no));
@@ -569,17 +640,22 @@ int main(int argc,char **argv){
         while (XPending(dpy)){
             XEvent ev; XNextEvent(dpy,&ev);
             switch(ev.type){
-                case Expose: break;
+                case Expose: if (ev.xexpose.window==exit_win) draw_exit_button(); break;
                 case ConfigureNotify: if(ev.xconfigure.window==shell_win){ W=ev.xconfigure.width; H=ev.xconfigure.height; XFreePixmap(dpy,backbuf); backbuf=XCreatePixmap(dpy,root_win,W,H,DefaultDepth(dpy,screen_no)); if(bg_cache){XFreePixmap(dpy,bg_cache); bg_cache=None;} } break;
-                case ButtonPress: hit_click(ev.xbutton.x,ev.xbutton.y); break;
-                case KeyPress:
-                    if (ev.xkey.state&ControlMask){ KeySym ks=XLookupKeysym(&ev.xkey,0); if(ks==XK_Escape){ close_client(); break; } }
-                    if (XLookupKeysym(&ev.xkey,0)==XK_Home && client_win!=None){ close_client(); break; }
-                    key_press(&ev); break;
+                case ButtonPress:
+                    if (ev.xbutton.window==exit_win){ close_client(); break; }
+                    hit_click(ev.xbutton.x,ev.xbutton.y); break;
+                case KeyPress: { KeySym ks0=XLookupKeysym(&ev.xkey,0);
+                    int exit_key = ks0==XK_Home || ks0==XK_Super_L || ks0==XK_F9 ||
+                                   ((ev.xkey.state&ControlMask) && ks0==XK_Escape);
+                    if (exit_key && (client_win!=None || child_pid>0)){ close_client(); break; }
+                    if (exit_key && mode==MODE_APP){ do_back(); break; }
+                    key_press(&ev); break; }
                 case MapRequest: { Window w=ev.xmaprequest.window;
+                    if (w==exit_win){ XMapWindow(dpy,w); break; }
                     if (w!=shell_win){ XSelectInput(dpy,w,StructureNotifyMask); XSetWindowBorderWidth(dpy,w,0);
                         XMoveResizeWindow(dpy,w,0,0,W,H); /* ПРИНУДИТЕЛЬНО весь экран */
-                        XMapWindow(dpy,w); XSetInputFocus(dpy,w,RevertToParent,CurrentTime); client_win=w; }
+                        XMapWindow(dpy,w); XSetInputFocus(dpy,w,RevertToParent,CurrentTime); client_win=w; sync_exit_button(); }
                     else XMapWindow(dpy,w);
                     break; }
                 case ConfigureRequest: { XWindowChanges wc; wc.x=0; wc.y=0; wc.width=W; wc.height=H; wc.border_width=0;
@@ -593,6 +669,7 @@ int main(int argc,char **argv){
         }
         /* внешний процесс умер, а окна не создал (нет бинарника) — вернуть оболочку */
         if (child_pid>0 && client_win==None){ if (kill(child_pid,0)<0 && errno==ESRCH){ child_pid=-1; XMapRaised(dpy,shell_win); toast_set("Приложение закрылось или не запустилось (см. /var/log/xross.log)"); } }
+        sync_exit_button();
         voice_poll();
 #ifdef __linux__
         joy_poll();
