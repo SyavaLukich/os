@@ -44,7 +44,8 @@ cp /tmp/xross-serial.log boottest-serial.log 2>/dev/null || : > boottest-serial.
 
 # Диагностика: ошибки X/сессии из serial (уникальные), затем хвост лога
 ann SERIAL "serial log bytes: $(wc -c < boottest-serial.log)"
-grep -aE "\(EE\)|Fatal|Server terminated|unable to|failed|Failed|no screens|Cannot|error" boottest-serial.log 2>/dev/null | sort | uniq -c | sort -rn | head -n 18 | while IFS= read -r line; do ann XERR "$line"; done
+grep -aE "\(EE\)|Fatal|Server terminated|unable to|failed|Failed|no screens|Cannot|error" boottest-serial.log 2>/dev/null | sort | uniq -c | sort -rn | head -n 12 | while IFS= read -r line; do ann XERR "$line"; done
+grep -a -A4 -m2 "Fatal server error" boottest-serial.log 2>/dev/null | head -n 12 | while IFS= read -r line; do ann XCTX "$line"; done
 tail -n 15 boottest-serial.log | while IFS= read -r line; do [ -n "$line" ] && ann SERIAL "$line"; done
 
 [ -n "$found" ] && exit 0
